@@ -3,6 +3,11 @@ project(RockNRollRacingSNESRecomp C CXX)
 
 set(CMAKE_C_STANDARD 11)
 
+if(CMAKE_C_FLAGS MATCHES "-flto" AND CMAKE_C_COMPILER_AR AND CMAKE_C_COMPILER_RANLIB)
+    set(CMAKE_AR "${CMAKE_C_COMPILER_AR}")
+    set(CMAKE_RANLIB "${CMAKE_C_COMPILER_RANLIB}")
+endif()
+
 # Release pin for lobby matching. Release builds stamp the VERSION file so two
 # peers can prove they are the same build; everything else stamps "dev".
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" _GAME_VER_RAW)

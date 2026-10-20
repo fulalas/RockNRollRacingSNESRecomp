@@ -12,6 +12,8 @@ snesrecomp.patch
   `rom_digest_whole_file` verifies the ROM file as stored, header included.
 - snes_savestate_menu.c/.h, desktop/host_main.c/.h: `state_menu_no_pad_chord`
   disables the Select+R controller chord for the save-state browser.
+- snes/ppu.c: BG modes 4-6 use the per-pixel renderer; the fast one only
+  covers 0-3 and 7 (fixes the equipment shop, mode 4).
 
 recomp-ui.patch
 - `digest_whole_file` on the launcher game info: hash the picked ROM whole.

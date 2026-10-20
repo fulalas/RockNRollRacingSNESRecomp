@@ -211,6 +211,21 @@ index e01e3ba..8a7b71e 100644
  /* Once port time is mapped, the frame timeline and interpreter catch-up
   * describe the same elapsed time. Extended-frame hosts use absolute sync;
   * legacy hosts and unmapped boot (e.g. Mega Man X's IPL polling) keep relative
+diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
+index 25dcfe0..f753bf1 100644
+--- a/runner/src/snes/ppu.c
++++ b/runner/src/snes/ppu.c
+@@ -838,7 +838,9 @@ void ppu_runLine(Ppu* ppu, int line) {
+              sizeof(ppu->overlayBuffers[kPpuOverlaySource_Obj]));
+     ppu->lineHasSprites = !PPU_forcedBlank(ppu) && ppu_evaluateSprites(ppu, line - 1);
+ 
+-    if (ppu->renderFlags & kPpuRenderFlags_NewRenderer) {
++    const unsigned fast_mode = PPU_mode(ppu);
++    if ((ppu->renderFlags & kPpuRenderFlags_NewRenderer) &&
++        (fast_mode <= 3 || fast_mode == 7)) {
+       debug_server_on_ppu_line_drawn(line, 1, ppu->bgmode);
+       PPU_T0; PpuDrawWholeLine(ppu, line); PPU_ACC(g_ppu_sec_line_ms);
+ #ifdef SNESRECOMP_INTERP_PROFILE
 diff --git a/runner/src/snes_savestate_menu.c b/runner/src/snes_savestate_menu.c
 index f42f1ab..08e9c6a 100644
 --- a/runner/src/snes_savestate_menu.c
