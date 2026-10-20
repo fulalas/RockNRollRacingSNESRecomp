@@ -1,0 +1,4 @@
+schema = 1
+identity_file = "rom_identity.txt"
+cfg_roots = true
+historical_profiles = ["tier2_coverage.json"]

@@ -1,0 +1,269 @@
+diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
+index d6086b3..bb7aad6 100644
+--- a/runner/src/beam_frame_driver.c
++++ b/runner/src/beam_frame_driver.c
+@@ -169,8 +169,22 @@ void snes_beam_frame_driver_run_frame(void) {
+      * and skipped the title. */
+     if (s_wai_halted && irq_line_asserted())
+       s_wai_halted = false;
++    if (!s_wai_halted && !irq_wanted() && beam_debt()) {
++      snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++      cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
++      continue;
++    }
+     if (!s_wai_halted && !irq_wanted()) {
+-      interp_bridge_set_master_deadline(frame_end);
++      uint64_t slice_end = frame_end;
++      if (!g_cpu._flag_I) {
++        uint32_t to_match = snes_master_clocks_until_irq(g_snes);
++        if (to_match) {
++          uint64_t at = g_cpu.master_cycles + to_match + 1;
++          if (at < slice_end)
++            slice_end = at;
++        }
++      }
++      interp_bridge_set_master_deadline(slice_end);
+       (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);
+       interp_bridge_set_master_deadline(0);
+       update_resume_pc();
+diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
+index 3bc3905..9977a33 100644
+--- a/runner/src/desktop/host_main.c
++++ b/runner/src/desktop/host_main.c
+@@ -63,6 +63,7 @@
+ #include "util.h"
+ #include "spc_player.h"
+ #include "launcher.h"
++#include "rom_image_verify.h"
+ #include "launcher_cache.h"
+ #include "host_paths.h"
+ #include "host_args.h"
+@@ -2707,6 +2708,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
+   gi->known_sha256 = g_rom_identity_ok
+       ? (const uint8_t (*)[32])&g_rom_sha256 : NULL;
+   gi->num_known_sha256 = g_rom_identity_ok ? 1 : 0;
++  gi->digest_whole_file = game->rom_digest_whole_file;
+   /* Additive: a title catalogued by SHA-1 sets these instead of, or as
+    * well as, the SHA-256 above. */
+   gi->known_sha1_hex = game->known_sha1_hex;
+@@ -3213,6 +3215,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+       g_config.output_method, g_config.new_renderer, g_config.window_scale,
+       g_config.fullscreen, g_config.enable_audio, g_config.audio_freq,
+       g_config.audio_samples);
++  snes_savestate_menu_set_pad_chord(!game->state_menu_no_pad_chord);
+   PadGestureConfigure(&g_rewind_gesture, g_config.rewind_gesture, "Select+R3",
+                       "rewind", "RewindGesture");
+   if (game->in_game_launcher)
+@@ -3247,6 +3250,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+   static char rom_path_buf[1024];
+   {
+     g_rom_identity_ok = DecodeRomIdentity(g_rom_sha256, &g_rom_crc32);
++    g_snesrecomp_rom_verify_whole_file = game->rom_digest_whole_file;
+     int rom_resolved_by_launcher = 0;
+     char beside_exe[1024] = "";
+     /* The ROM comes from the shared parser now: positional or --rom,
+@@ -3913,7 +3917,8 @@ error_reading:;
+           snes_savestate_menu_poll_nav(human, SDL_GetTicks());
+         } else if (!snes_netplay_menu_paused()) {
+           (void)snes_savestate_menu_poll_open(g_savestate_menu_hotkey
+-              ? (SNES_PAD_SELECT | SNES_PAD_R) : human);
++              ? (SNES_PAD_SELECT | SNES_PAD_R)
++              : snes_savestate_menu_pad_chord() ? human : 0);
+         }
+         g_savestate_menu_hotkey = 0;
+         if (snes_netplay_menu_ready() && !snes_savestate_menu_is_open())
+@@ -4170,7 +4175,7 @@ error_reading:;
+     g_rewind_hotkey = 0;
+     /* Exactly ONE poll_open per frame: it latches the previous word to edge
+      * detect on, so a second call in the same frame eats the edge. */
+-    (void)snes_savestate_menu_poll_open(human);
++    (void)snes_savestate_menu_poll_open(snes_savestate_menu_pad_chord() ? human : 0);
+     if (g_savestate_menu_hotkey) {
+       g_savestate_menu_hotkey = 0;
+       if (!snes_savestate_menu_is_open())
+diff --git a/runner/src/desktop/host_main.h b/runner/src/desktop/host_main.h
+index 03b6f06..b27b1c4 100644
+--- a/runner/src/desktop/host_main.h
++++ b/runner/src/desktop/host_main.h
+@@ -92,6 +92,9 @@ typedef struct SnesDesktopHostGame {
+   int native_widescreen;
+   /* F7/F8 menus, with legacy slot 7/8 loads moved to F11/F12. */
+   int state_menu_hotkeys;
++  /* 1: the save-state browser opens only from its hotkey; the Select+R
++   * controller chord is ignored (a game that uses Select in play). */
++  int state_menu_no_pad_chord;
+   int display_aspect_supported; /* expose the three SNES pixel-aspect choices */
+   int shader_supported;        /* expose GLSL presets (OpenGL presenter) */
+ 
+@@ -186,6 +189,9 @@ typedef struct SnesDesktopHostGame {
+    * restarts the game through a temporary save state, so the player resumes
+    * exactly where they left off. Zero keeps today's behaviour exactly. */
+   int in_game_launcher;
++  /* 1: the identity digests cover the ROM file as stored, copier header
++   * included, so only that exact dump verifies. 0: headerless payload. */
++  int rom_digest_whole_file;
+ 
+   /* Optional title policy after the shared launcher has been seeded. */
+   void (*configure_launcher)(struct RecompLauncherCGameInfo *info);
+diff --git a/runner/src/mod_runtime.cpp b/runner/src/mod_runtime.cpp
+index 58c0955..3375781 100644
+--- a/runner/src/mod_runtime.cpp
++++ b/runner/src/mod_runtime.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "crc32.h"
+ #include "sha256.h"
++#include "rom_image_verify.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -2322,6 +2323,7 @@ bool sha256_file(const fs::path& path, std::string& out,
+     std::vector<uint8_t> bytes;
+     if (!read_file(path, bytes, error)) return false;
+     const size_t offset =
++        !g_snesrecomp_rom_verify_whole_file &&
+         bytes.size() >= 512 && (bytes.size() % 0x8000u) == 512u ? 512u : 0u;
+     uint8_t digest[32];
+     sha256_compute(bytes.data() + offset, bytes.size() - offset, digest);
+diff --git a/runner/src/rom_image_verify.c b/runner/src/rom_image_verify.c
+index 4a87b38..8d3add8 100644
+--- a/runner/src/rom_image_verify.c
++++ b/runner/src/rom_image_verify.c
+@@ -12,6 +12,8 @@
+ #  include <windows.h>
+ #endif
+ 
++int g_snesrecomp_rom_verify_whole_file = 0;
++
+ typedef struct RomImage {
+     uint8_t *storage;
+     const uint8_t *payload;
+@@ -51,7 +53,7 @@ static int rom_image_load(const char *path, RomImage *image) {
+         return 0;
+     }
+ 
+-    size_t header_size = ((size_t)raw_size % 1024 == 512) ? 512 : 0;
++    size_t header_size = (!g_snesrecomp_rom_verify_whole_file && (size_t)raw_size % 1024 == 512) ? 512 : 0;
+     image->payload = image->storage + header_size;
+     image->payload_size = (size_t)raw_size - header_size;
+     return 1;
+diff --git a/runner/src/rom_image_verify.h b/runner/src/rom_image_verify.h
+index 43fde03..a67b6b9 100644
+--- a/runner/src/rom_image_verify.h
++++ b/runner/src/rom_image_verify.h
+@@ -3,6 +3,14 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ 
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* When nonzero, digests cover the file as stored (a 512-byte SMC copier
++ * header included) instead of the headerless payload. */
++extern int g_snesrecomp_rom_verify_whole_file;
++
+ int snesrecomp_rom_is_readable(const char *path);
+ int snesrecomp_rom_verify_crc32(const char *path, uint32_t expected_crc);
+ int snesrecomp_rom_verify_sha256(const char *path,
+@@ -10,3 +18,7 @@ int snesrecomp_rom_verify_sha256(const char *path,
+ int snesrecomp_rom_match_sha256(const char *path,
+                                 const uint8_t (*hashes)[32],
+                                 size_t n_hashes);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
+index c1e48eb..d10f6de 100644
+--- a/runner/src/snes/interp_bridge.c
++++ b/runner/src/snes/interp_bridge.c
+@@ -7,6 +7,8 @@
+ #include <string.h>
+ #include <time.h>
+ #include "interp_bridge.h"
++
++unsigned g_interp_bridge_master_scale_pct = 100u;
+ #include "interp816.h"
+ #include "tier2_capture.h"
+ #include "snes.h"   /* Snes, apuCatchupCycles, snes_catchupApu */
+@@ -2474,6 +2476,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
+             uint64_t _master = s_interp_bus_master + (uint64_t)_internal * 6u;
+             g_interp_bridge_steps++;
+             cpu->cycles        += (uint64_t)_cyc;
++            if (g_interp_bridge_master_scale_pct != 100u)
++                _master = _master * 100u / g_interp_bridge_master_scale_pct;
+             cpu->master_cycles += _master;
+             /* DRAM refresh tax — shared watermark with the AOT tier's
+              * WatchdogCheck charge; see common_cpu_infra.c. */
+diff --git a/runner/src/snes/interp_bridge.h b/runner/src/snes/interp_bridge.h
+index e01e3ba..8a7b71e 100644
+--- a/runner/src/snes/interp_bridge.h
++++ b/runner/src/snes/interp_bridge.h
+@@ -124,6 +124,10 @@ void interp_bridge_dump_recent(int n, FILE *out);
+  * 1 accelerated. Native interrupt helpers retain their ordinary policy. */
+ void interp_bridge_set_scheduler_aot_policy(int enabled);
+ 
++/* CPU overclock: interpreted instructions charge master clocks scaled by
++ * 100/pct. 100 is stock speed. */
++extern unsigned g_interp_bridge_master_scale_pct;
++
+ /* Once port time is mapped, the frame timeline and interpreter catch-up
+  * describe the same elapsed time. Extended-frame hosts use absolute sync;
+  * legacy hosts and unmapped boot (e.g. Mega Man X's IPL polling) keep relative
+diff --git a/runner/src/snes_savestate_menu.c b/runner/src/snes_savestate_menu.c
+index f42f1ab..08e9c6a 100644
+--- a/runner/src/snes_savestate_menu.c
++++ b/runner/src/snes_savestate_menu.c
+@@ -79,6 +79,7 @@
+ 
+ 
+ static int s_open;
++static int s_pad_chord = 1;
+ /* Netplay guest: a read-only mirror of the host's menu. */
+ static int s_mirror;
+ static int s_selected;
+@@ -283,7 +284,8 @@ static void rasterize_panel(void)
+ 
+     fill_rect(s_panel, 0, 0, SSM_W, 40, 0xFF171B25u);
+     draw_text(s_panel, 20, 12, "SAVE STATES", 0xFFFFD24Du, 2);
+-    draw_text(s_panel, 384, 16, "SELECT+R MENU", 0xFFB8BDC8u, 1);
++    if (s_pad_chord)
++        draw_text(s_panel, 384, 16, "SELECT+R MENU", 0xFFB8BDC8u, 1);
+ 
+     if (!s_thumbs_scanned)
+         refresh_thumbs();
+@@ -552,6 +554,16 @@ uint32_t snes_savestate_menu_filter_guest_input(uint32_t inputs)
+     return inputs & ~s_input_guard;
+ }
+ 
++void snes_savestate_menu_set_pad_chord(int enabled)
++{
++    s_pad_chord = enabled ? 1 : 0;
++}
++
++int snes_savestate_menu_pad_chord(void)
++{
++    return s_pad_chord;
++}
++
+ int snes_savestate_menu_poll_open(uint32_t inputs)
+ {
+     uint32_t prev = s_prev_inputs;
+diff --git a/runner/src/snes_savestate_menu.h b/runner/src/snes_savestate_menu.h
+index f905eca..8948b3e 100644
+--- a/runner/src/snes_savestate_menu.h
++++ b/runner/src/snes_savestate_menu.h
+@@ -71,6 +71,12 @@ void snes_savestate_menu_handle_key(int key, int repeat);
+ 
+ void snes_savestate_menu_close(void);
+ 
++/* The Select+R controller chord that opens (and closes) the browser. Off,
++ * only the host's hotkey opens it and the header stops advertising the chord;
++ * the host masks the chord out of the pad word it polls with. Default on. */
++void snes_savestate_menu_set_pad_chord(int enabled);
++int snes_savestate_menu_pad_chord(void);
++
+ /* Hand over the frame the player is looking at, in the PPU's native XRGB
+  * layout, so a save taken from this point carries a thumbnail of it. Cheap
+  * (one downsample to 128x112); ignored while the menu is open, so the

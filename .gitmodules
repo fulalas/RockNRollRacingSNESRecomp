@@ -1,0 +1,10 @@
+[submodule "snesrecomp"]
+	path = snesrecomp
+	url = https://github.com/mstan/snesrecomp
+	branch = main
+	ignore = dirty
+[submodule "recomp-ui"]
+	path = recomp-ui
+	url = https://github.com/mstan/recomp-ui.git
+	branch = master
+	ignore = dirty

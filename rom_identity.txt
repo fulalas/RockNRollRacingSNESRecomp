@@ -1,0 +1,26 @@
+# ROM identity for Rock N' Roll Racing — the single source of truth.
+#
+# Read by three consumers, so a revision change is made once, here:
+#   - the build   (CMake generates snesrecomp_rom_identity.h from this file)
+#   - tools/regen.sh
+#   - .github/workflows/release.yml
+#
+# Format is `key = value`, one per line; `#` starts a comment. Values may be
+# quoted. Leaving a digest empty means the build cannot verify a ROM it is
+# handed — it will say so rather than accept it.
+
+display_name    = Rock N' Roll Racing
+rom_file        = Rock N' Roll Racing (U).smc
+# Digests of the dump as stored: this is the headered (512-byte SMC copier
+# header) "Rock N' Roll Racing (U).smc" file, hashed whole. The build verifies
+# the whole file, so a bare image is refused.
+expected_crc32  = 3cf0de1f
+expected_md5    = c2f8eac8dcd5568431544293e91b6870
+expected_sha1   = 5427fb67f6e25283952e8d440d098343001ab7d4
+expected_sha256 = 04cac1e7fed7c811fe12cde2a1ec2ac6bb9c3453e099fddcd914f2e6d76a1f50
+rom_size        = 1049088
+mapping         = lorom
+region          = USA
+# What a mod package's [[target]] game_id must name to apply to this title
+# (snesrecomp/docs/MOD_PACKAGES.md). Stable across revisions on purpose.
+game_id         = rocknrollracing-usa

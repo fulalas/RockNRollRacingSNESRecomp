@@ -1,0 +1,46 @@
+diff --git a/src/common/launcher_model.c b/src/common/launcher_model.c
+index febe98d..df79a58 100644
+--- a/src/common/launcher_model.c
++++ b/src/common/launcher_model.c
+@@ -385,6 +385,7 @@ void launcher_model_init(LauncherModel* m,
+         m->known_sha1_hex       = game->known_sha1_hex;
+         m->num_known_sha1       = game->num_known_sha1;
+         m->num_known_sha256     = game->num_known_sha256;
++        m->digest_whole_file    = game->digest_whole_file != 0;
+ 
+         m->pad_mode_supported   = game->pad_mode_supported != 0;
+         m->pad_mode_selectable  = game->pad_mode_selectable != 0;
+@@ -1367,6 +1368,7 @@ void launcher_model_set_rom(LauncherModel* m, const char* path) {
+                             buf[2] == 'S' && buf[3] == 0x1A) {
+                             hdr = 16;
+                         }
++                        if (m->digest_whole_file) hdr = 0;
+                         const uint8_t* body = buf + hdr;
+                         size_t blen = (size_t)n - hdr;
+                         uint32_t crc = recompui_crc32_compute(body, blen);
+diff --git a/src/common/launcher_model.h b/src/common/launcher_model.h
+index d01602e..f75ae6b 100644
+--- a/src/common/launcher_model.h
++++ b/src/common/launcher_model.h
+@@ -430,6 +430,7 @@ typedef struct {
+     size_t          num_known_sha256;
+     const char* const* known_sha1_hex;   // accepted SHA-1 (40-hex), cartridge gate
+     size_t          num_known_sha1;
++    bool            digest_whole_file;   // hash the file as stored, header included
+ 
+     // ---- controller pad-mode caps (PlayStation-style analog/digital) ----
+     bool     pad_mode_supported;    // false => no selector/art swap; generic pad.tga
+diff --git a/src/recomp_launcher.h b/src/recomp_launcher.h
+index c3ff46e..fcc8630 100644
+--- a/src/recomp_launcher.h
++++ b/src/recomp_launcher.h
+@@ -1695,6 +1695,9 @@ typedef struct RecompLauncherCGameInfo {
+      * CRC32 is dump-specific; SHA-1 is the canonical ROM identity). */
+     const char* const* known_sha1_hex;
+     size_t         num_known_sha1;
++    /* 1: fingerprints cover the ROM file as stored (SMC copier header
++     * included); 0: the header is stripped before hashing. */
++    int            digest_whole_file;
+     int            widescreen_supported;   /* hide Widescreen settings when 0 */
+     /* How many players the GAME supports (1..RECOMP_LAUNCHER_MAX_PLAYERS),
+      * additionally capped by the active console profile. The launcher hides

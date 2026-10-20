@@ -1,0 +1,162 @@
+format_version = 1
+id = "rnrr.display"
+version = "1.0.0"
+name = "Rock N' Roll Racing Display Enhancements"
+author = "RockNRollRacingSNESRecomp"
+description = "30 FPS race logic, true widescreen races and motion interpolation."
+license = "MIT"
+resolver = "declarative"
+save_compatibility = "shared"
+
+[[target]]
+game_id = "rocknrollracing-usa"
+rom_sha256 = "04cac1e7fed7c811fe12cde2a1ec2ac6bb9c3453e099fddcd914f2e6d76a1f50"
+
+[[feature]]
+id = "fps30"
+name = "30 FPS game logic"
+description = "Runs the race logic at 30 updates per second instead of the stock 20, with the original pacing; the ROM is never modified. Takes effect on the next launch. Off runs the unmodified game through the interpreter."
+group = "Game"
+default_enabled = true
+
+[[plugin]]
+feature = "fps30"
+id = "rnrr.fps30"
+
+[[feature]]
+id = "widescreen"
+name = "Widescreen"
+description = "Widens the race view. Menus and the title stay 4:3 and are pillarboxed."
+group = "Display"
+default_enabled = true
+
+[[plugin]]
+feature = "widescreen"
+id = "rnrr.widescreen"
+
+[[option]]
+feature = "widescreen"
+id = "aspect"
+label = "Aspect ratio"
+type = "choice"
+default = "16:9"
+
+[[option.choice]]
+value = "16:9"
+label = "16:9"
+
+[[option.choice]]
+value = "21:9"
+label = "21:9"
+
+[[option.choice]]
+value = "32:9"
+label = "32:9"
+
+[[option.choice]]
+value = "fit"
+label = "Fit window"
+
+[[feature]]
+id = "presentation-fps"
+name = "Motion interpolation"
+description = "Presents at the display refresh (or a fixed rate) and blends background scrolling and car motion between the game's logic updates, so 30 updates per second look smooth at 120 Hz. Adds 1 frame of display delay, since a game frame is shown only once the next one is known."
+group = "Display"
+default_enabled = true
+
+[[plugin]]
+feature = "presentation-fps"
+id = "rnrr.presentation-fps"
+
+[[option]]
+feature = "presentation-fps"
+id = "rate"
+label = "Rate"
+type = "choice"
+default = "auto"
+
+[[option.choice]]
+value = "auto"
+label = "Display refresh"
+
+[[option.choice]]
+value = "90"
+label = "90"
+
+[[option.choice]]
+value = "120"
+label = "120"
+
+[[option.choice]]
+value = "144"
+label = "144"
+
+[[option.choice]]
+value = "165"
+label = "165"
+
+[[option.choice]]
+value = "240"
+label = "240"
+
+[[option.choice]]
+value = "360"
+label = "360"
+
+[[feature]]
+id = "overclock"
+name = "CPU overclock"
+description = "Gives the game more CPU time per frame during races so its logic never overruns a frame. Auto is 150% with the 30 FPS feature on, 100% with it off."
+group = "Display"
+default_enabled = true
+
+[[plugin]]
+feature = "overclock"
+id = "rnrr.overclock"
+
+[[option]]
+feature = "overclock"
+id = "percent"
+label = "CPU speed"
+type = "choice"
+default = "auto"
+
+[[option.choice]]
+value = "auto"
+label = "Auto"
+
+[[option.choice]]
+value = "100"
+label = "100% (stock)"
+
+[[option.choice]]
+value = "125"
+label = "125%"
+
+[[option.choice]]
+value = "150"
+label = "150%"
+
+[[option.choice]]
+value = "200"
+label = "200%"
+
+[[feature]]
+id = "msu1"
+name = "MSU-1 music"
+description = "Streams a CD-quality music pack. Select a folder containing the pack's .pcm tracks and its MSU-1 .ips or .bps patch; the stock ROM is patched in memory and runs through the interpreter."
+group = "Audio"
+default_enabled = false
+
+[[plugin]]
+feature = "msu1"
+id = "rnrr.msu1"
+
+[[resource]]
+feature = "msu1"
+id = "pack"
+label = "Music pack folder"
+description = "Folder with the MSU-1 .pcm tracks and the patch (.ips or .bps)."
+format = "directory"
+identity = "snes.msu1.pack"
+required = true
