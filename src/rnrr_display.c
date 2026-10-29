@@ -26,6 +26,7 @@ enum {
     HUD_RIGHT_START = 186,
     INTERP_MAX_SCROLL = 48,
     INTERP_MAX_OBJ = 24,
+    KEY_PERIOD_MAX = 3,
 };
 
 volatile uint16_t g_rnrr_cull_left = 0xffc0;
@@ -116,7 +117,7 @@ static unsigned s_key_hist_pos;
 static unsigned key_period_mode(void)
 {
     unsigned best = 1, best_n = 0;
-    for (unsigned p = 1; p <= 4; p++) {
+    for (unsigned p = 1; p <= KEY_PERIOD_MAX; p++) {
         unsigned n = 0;
         for (unsigned i = 0; i < 8; i++) n += s_key_hist[i] == p;
         if (n > best_n) { best_n = n; best = p; }
@@ -812,9 +813,9 @@ void RnrrEndSimFrame(const uint8_t *field, unsigned number)
                 fprintf(stderr, "[rnrr-upd] field=%u race=%d oc=%u regs_lines=%u first=%u oam_words=%u hoam=%u h1=%u->%u v1=%u->%u\n",
                         number, s_race_frame, s_overclock, nr, first, no, nh, b->hScroll[0], a->hScroll[0], b->vScroll[0], a->vScroll[0]);
             }
-            if (key->valid) {
-                unsigned gap = number - s_key_field;
-                s_key_hist[s_key_hist_pos++ & 7] = (uint8_t)(gap > 4 ? 4 : gap);
+            unsigned gap = number - s_key_field;
+            if (key->valid && gap <= KEY_PERIOD_MAX) {
+                s_key_hist[s_key_hist_pos++ & 7] = (uint8_t)gap;
                 s_key_period = key_period_mode();
             }
             s_key_cur ^= 1;

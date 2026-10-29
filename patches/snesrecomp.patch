@@ -174,6 +174,36 @@ index 43fde03..a67b6b9 100644
 +#ifdef __cplusplus
 +}
 +#endif
+diff --git a/runner/src/snes/dsp.c b/runner/src/snes/dsp.c
+index 17304fd..bd5488b 100644
+--- a/runner/src/snes/dsp.c
++++ b/runner/src/snes/dsp.c
+@@ -310,6 +310,7 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+   // this latched path. A pending keyOn survives while keyOff is held
+   // (engine clears $5C later -> voice starts at the next poll), exactly
+   // as on hardware.
++  bool keyedOn = false;
+   if(dsp->evenCycle) {
+     // handle keyon/off (every other cycle)
+     if(dsp->channel[ch].keyOff) {
+@@ -317,6 +318,7 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+       dsp->channel[ch].adsrState = 4;
+     } else if(dsp->channel[ch].keyOn) {
+       dsp->channel[ch].keyOn = false;
++      keyedOn = true;
+       // restart current sample
+       dsp->channel[ch].previousFlags = 0;
+       uint16_t samplePointer = dsp->dirPage + 4 * dsp->channel[ch].srcn;
+@@ -367,7 +369,8 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+     if(!releasing) dsp->channel[ch].rateCounter = 0;
+     dsp_handleGain(dsp, ch, liveGain);
+   }
+-  if(doingDirectGain) dsp->channel[ch].gain = dsp->channel[ch].gainValue;
++  if(keyedOn) dsp->channel[ch].gain = 0;
++  else if(doingDirectGain) dsp->channel[ch].gain = dsp->channel[ch].gainValue;
+   // set outputs
+   dsp->ram[(ch << 4) | 8] = dsp->channel[ch].gain >> 4;
+   sample = (sample * dsp->channel[ch].gain) >> 11;
 diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
 index c1e48eb..d10f6de 100644
 --- a/runner/src/snes/interp_bridge.c

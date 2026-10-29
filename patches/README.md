@@ -14,6 +14,8 @@ snesrecomp.patch
   disables the Select+R controller chord for the save-state browser.
 - snes/ppu.c: BG modes 4-6 use the per-pixel renderer; the fast one only
   covers 0-3 and 7 (fixes the equipment shop, mode 4).
+- snes/dsp.c: a voice is silent on its key-on sample; it played one stale
+  sample at the new gain, a click on every direct-gain note start.
 
 recomp-ui.patch
 - `digest_whole_file` on the launcher game info: hash the picked ROM whole.
