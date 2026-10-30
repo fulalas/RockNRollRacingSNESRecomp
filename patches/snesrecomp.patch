@@ -175,10 +175,63 @@ index 43fde03..a67b6b9 100644
 +}
 +#endif
 diff --git a/runner/src/snes/dsp.c b/runner/src/snes/dsp.c
-index 17304fd..bd5488b 100644
+index 17304fd..dd53317 100644
 --- a/runner/src/snes/dsp.c
 +++ b/runner/src/snes/dsp.c
-@@ -310,6 +310,7 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+@@ -64,6 +64,24 @@ static void dsp_decodeBrr(Dsp* dsp, int ch);
+ /* dsp_getSample is declared non-static in dsp.h (dev faithful reference uses it). */
+ static void dsp_handleNoise(Dsp* dsp);
+ 
++#define DSP_TAIL_FRAMES 32
++
++static void dsp_startTail(Dsp* dsp, int ch) {
++  dsp->tailL[ch] = dsp->lastL[ch];
++  dsp->tailR[ch] = dsp->lastR[ch];
++  dsp->tailPos[ch] = DSP_TAIL_FRAMES;
++}
++
++static bool dsp_voiceFading(const Dsp* dsp, int ch) {
++  return (dsp->channel[ch].adsrState == 4 || dsp->channel[ch].keyOff) &&
++         dsp->channel[ch].gain != 0;
++}
++
++static void dsp_loadVoiceRegs(Dsp* dsp, int ch) {
++  dsp->channel[ch].pitch = (dsp->ram[(ch << 4) | 2] | (dsp->ram[(ch << 4) | 3] << 8)) & 0x3fff;
++  dsp->channel[ch].srcn = dsp->ram[(ch << 4) | 4];
++}
++
+ Dsp* dsp_init(uint8_t *ram) {
+   Dsp* dsp = calloc(1, sizeof(Dsp));  /* zero padding: saveload/co-sim hash determinism */
+   dsp->apu_ram = ram;
+@@ -128,6 +146,7 @@ void dsp_reset(Dsp* dsp) {
+   memset(dsp->firBufferL, 0, sizeof(dsp->firBufferL));
+   memset(dsp->firBufferR, 0, sizeof(dsp->firBufferR));
+   memset(dsp->sampleBuffer, 0, sizeof(dsp->sampleBuffer));
++  memset(dsp->tailPos, 0, sizeof(dsp->tailPos));
+   dsp->sampleWrite = 0;
+   dsp->sampleRead = 0;
+ }
+@@ -168,8 +187,17 @@ void dsp_cycle(Dsp* dsp) {
+   int totalR = 0;
+   for(int i = 0; i < 8; i++) {
+     dsp_cycleChannel(dsp, i);
+-    totalL += (dsp->channel[i].sampleOut * dsp->channel[i].volumeL) >> 6;
+-    totalR += (dsp->channel[i].sampleOut * dsp->channel[i].volumeR) >> 6;
++    int outL = (dsp->channel[i].sampleOut * dsp->channel[i].volumeL) >> 6;
++    int outR = (dsp->channel[i].sampleOut * dsp->channel[i].volumeR) >> 6;
++    if(dsp->tailPos[i]) {
++      outL += dsp->tailL[i] * dsp->tailPos[i] / DSP_TAIL_FRAMES;
++      outR += dsp->tailR[i] * dsp->tailPos[i] / DSP_TAIL_FRAMES;
++      dsp->tailPos[i]--;
++    }
++    dsp->lastL[i] = outL < -0x8000 ? -0x8000 : (outL > 0x7fff ? 0x7fff : outL);
++    dsp->lastR[i] = outR < -0x8000 ? -0x8000 : (outR > 0x7fff ? 0x7fff : outR);
++    totalL += outL;
++    totalR += outR;
+     totalL = totalL < -0x8000 ? -0x8000 : (totalL > 0x7fff ? 0x7fff : totalL); // clamp 16-bit
+     totalR = totalR < -0x8000 ? -0x8000 : (totalR > 0x7fff ? 0x7fff : totalR); // clamp 16-bit
+   }
+@@ -310,6 +338,7 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
    // this latched path. A pending keyOn survives while keyOff is held
    // (engine clears $5C later -> voice starts at the next poll), exactly
    // as on hardware.
@@ -186,15 +239,17 @@ index 17304fd..bd5488b 100644
    if(dsp->evenCycle) {
      // handle keyon/off (every other cycle)
      if(dsp->channel[ch].keyOff) {
-@@ -317,6 +318,7 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+@@ -317,6 +346,9 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
        dsp->channel[ch].adsrState = 4;
      } else if(dsp->channel[ch].keyOn) {
        dsp->channel[ch].keyOn = false;
 +      keyedOn = true;
++      dsp_startTail(dsp, ch);
++      dsp_loadVoiceRegs(dsp, ch);
        // restart current sample
        dsp->channel[ch].previousFlags = 0;
        uint16_t samplePointer = dsp->dirPage + 4 * dsp->channel[ch].srcn;
-@@ -367,7 +369,8 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+@@ -367,7 +399,8 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
      if(!releasing) dsp->channel[ch].rateCounter = 0;
      dsp_handleGain(dsp, ch, liveGain);
    }
@@ -204,6 +259,69 @@ index 17304fd..bd5488b 100644
    // set outputs
    dsp->ram[(ch << 4) | 8] = dsp->channel[ch].gain >> 4;
    sample = (sample * dsp->channel[ch].gain) >> 11;
+@@ -377,9 +410,11 @@ static void dsp_cycleChannel(Dsp* dsp, int ch) {
+ 
+ static void dsp_handleGain(Dsp* dsp, int ch, bool liveGain) {
+   if(dsp->channel[ch].adsrState == 4) { // release
++    bool wasAudible = dsp->channel[ch].gain != 0;
+     dsp->channel[ch].gain -= 8;
+     // decreasing below 0 will underflow to above 0x7ff
+     if(dsp->channel[ch].gain > 0x7ff) dsp->channel[ch].gain = 0;
++    if(wasAudible && dsp->channel[ch].gain == 0) dsp_loadVoiceRegs(dsp, ch);
+     return;
+   }
+   if(liveGain) {
+@@ -444,7 +479,6 @@ int16_t dsp_getSample(Dsp* dsp, int ch, int sampleNum, int offset) {
+   int out = (gaussValues[0xff - offset] * oldests) >> 10;
+   out += (gaussValues[0x1ff - offset] * olders) >> 10;
+   out += (gaussValues[0x100 + offset] * olds) >> 10;
+-  out = ((int16_t) (out & 0xffff)); // clip 16-bit
+   out += (gaussValues[offset] * news) >> 10;
+   out = out < -0x8000 ? -0x8000 : (out > 0x7fff ? 0x7fff : out); // clamp 16-bit
+   return out >> 1;
+@@ -463,6 +497,7 @@ static void dsp_decodeBrr(Dsp* dsp, int ch) {
+     dsp->channel[ch].decodeOffset |= (dsp->apu_ram[(samplePointer + 3) & 0xffff]) << 8;
+     if(dsp->channel[ch].previousFlags == 1) {
+       // also release and clear gain
++      dsp_startTail(dsp, ch);
+       dsp->channel[ch].adsrState = 4;
+       dsp->channel[ch].gain = 0;
+     }
+@@ -548,15 +583,15 @@ void dsp_write(Dsp* dsp, uint8_t adr, uint8_t val) {
+       break;
+     }
+     case 0x02: case 0x12: case 0x22: case 0x32: case 0x42: case 0x52: case 0x62: case 0x72: {
+-      dsp->channel[ch].pitch = (dsp->channel[ch].pitch & 0x3f00) | val;
++      if(!dsp_voiceFading(dsp, ch)) dsp->channel[ch].pitch = (dsp->channel[ch].pitch & 0x3f00) | val;
+       break;
+     }
+     case 0x03: case 0x13: case 0x23: case 0x33: case 0x43: case 0x53: case 0x63: case 0x73: {
+-      dsp->channel[ch].pitch = ((dsp->channel[ch].pitch & 0x00ff) | (val << 8)) & 0x3fff;
++      if(!dsp_voiceFading(dsp, ch)) dsp->channel[ch].pitch = ((dsp->channel[ch].pitch & 0x00ff) | (val << 8)) & 0x3fff;
+       break;
+     }
+     case 0x04: case 0x14: case 0x24: case 0x34: case 0x44: case 0x54: case 0x64: case 0x74: {
+-      dsp->channel[ch].srcn = val;
++      if(!dsp_voiceFading(dsp, ch)) dsp->channel[ch].srcn = val;
+       break;
+     }
+     case 0x05: case 0x15: case 0x25: case 0x35: case 0x45: case 0x55: case 0x65: case 0x75: {
+diff --git a/runner/src/snes/dsp.h b/runner/src/snes/dsp.h
+index 5088a31..69d8a93 100644
+--- a/runner/src/snes/dsp.h
++++ b/runner/src/snes/dsp.h
+@@ -61,6 +61,11 @@ struct Dsp {
+   // (which serializes from `ram` to end) — savestate layout is unchanged.
+   // void* to keep dsp.h free of the shadow header; dsp.c owns the type.
+   void *shadow;
++  int16_t tailL[8];
++  int16_t tailR[8];
++  uint8_t tailPos[8];
++  int16_t lastL[8];
++  int16_t lastR[8];
+   // mirror ram
+   uint8_t ram[0x80];
+   // 8 channels
 diff --git a/runner/src/snes/interp_bridge.c b/runner/src/snes/interp_bridge.c
 index c1e48eb..d10f6de 100644
 --- a/runner/src/snes/interp_bridge.c
