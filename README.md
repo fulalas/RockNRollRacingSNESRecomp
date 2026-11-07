@@ -29,15 +29,14 @@ Fully working.
   aspects (4:3, 8:7, 1:1).
 - **Widescreen** (Mods page): 16:9, 21:9, 32:9, or fit to window. Races render
   wider; the HUD anchors to the screen edges; menus and the title stay 4:3.
+- **30 FPS game logic** (Mods page, on by default): the race logic runs at
+  30 updates per second instead of 20, with the original pacing.
 - **Motion interpolation** (Mods page, on by default): present at the display
   refresh or a fixed 90-360 Hz, blending background scrolling and sprite
   positions between the game's logic updates (every 2nd field with the 30 FPS
   feature, every 3rd without). Costs 1 frame of display delay. The F readout
   shows a second line: game updates, presented frames, interpolated frames and
   simulated fields per second.
-- **30 FPS game logic** (Mods page, on by default): the race logic runs at
-  30 updates per second instead of 20, with the original pacing. See "One ROM,
-  two speeds" below.
 - **CPU overclock** (Mods page, on by default): charges CPU instructions fewer
   master clocks during races so the game's logic never overruns its frame
   budget. Auto is 150% with the 30 FPS feature on, which otherwise drops to
