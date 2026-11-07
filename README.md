@@ -21,12 +21,6 @@ Fully working.
 
 ## Features
 
-- Save states with a 12-slot browser and thumbnails (**F7** or Select + R),
-  quick slots F1-F10, rewind filmstrip (**F8** or Select + R3). Rewind depth
-  and interval are set in the launcher.
-- Display shaders (CRT Soft, LCD Grid, Sharp, Warm Composite, or your own
-  `.glsl`/`.glslp` dropped into `assets/shaders/`) and the three SNES pixel
-  aspects (4:3, 8:7, 1:1).
 - **Widescreen** (Mods page): 16:9, 21:9, 32:9, or fit to window. Races render
   wider; the HUD anchors to the screen edges; menus and the title stay 4:3.
 - **30 FPS game logic** (Mods page, on by default): the race logic runs at
@@ -43,6 +37,12 @@ Fully working.
   about 26-28 updates per second in busy scenes, and 100% with it off. The
   game's update rate is divider-driven, so a faster CPU does not change game
   speed.
+- Save states with a 12-slot browser and thumbnails (**F7** or Select + R),
+  quick slots F1-F10, rewind filmstrip (**F8** or Select + R3). Rewind depth
+  and interval are set in the launcher.
+- Display shaders (CRT Soft, LCD Grid, Sharp, Warm Composite, or your own
+  `.glsl`/`.glslp` dropped into `assets/shaders/`) and the three SNES pixel
+  aspects (4:3, 8:7, 1:1).
 - **MSU-1 music** (Mods page): point the feature at a folder holding a
   Rock N' Roll Racing MSU-1 pack (`.pcm` tracks plus its `.ips` or `.bps`
   patch). The patch is applied in memory, the stock ROM is never modified, and
