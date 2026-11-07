@@ -37,6 +37,11 @@ Fully working.
   about 26-28 updates per second in busy scenes, and 100% with it off. The
   game's update rate is divider-driven, so a faster CPU does not change game
   speed.
+- **NTSC shaders**: `ntsc-composite`, `ntsc-svideo`, `ntsc-rgb`, and
+  `ntsc-monochrome` mimic Snes9x's Blargg NTSC filter. Hue, saturation,
+  contrast, brightness, sharpness, gamma, artifacts, fringing, bleed,
+  resolution, scanline intensity (12.5% default), and merge-fields are shader
+  parameters (`ntsc_*`), settable per preset in the `.glslp`.
 - Save states with a 12-slot browser and thumbnails (**F7** or Select + R),
   quick slots F1-F10, rewind filmstrip (**F8** or Select + R3). Rewind depth
   and interval are set in the launcher.
@@ -50,11 +55,6 @@ Fully working.
   in `saves/msu1/` and are not interchangeable with stock ones.
 - Gamepads through SDL, rebindable keys and hotkeys in the launcher, and the
   in-game launcher (Ctrl+L or Select + L3).
-- **NTSC shaders**: `ntsc-composite`, `ntsc-svideo`, `ntsc-rgb`, and
-  `ntsc-monochrome` mimic Snes9x's Blargg NTSC filter. Hue, saturation,
-  contrast, brightness, sharpness, gamma, artifacts, fringing, bleed,
-  resolution, scanline intensity (12.5% default), and merge-fields are shader
-  parameters (`ntsc_*`), settable per preset in the `.glslp`.
 
 ### Widescreen notes
 
