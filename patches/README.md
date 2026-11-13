@@ -6,6 +6,8 @@ a submodule pin, regenerate the file with `git -C <submodule> diff`.
 snesrecomp.patch
 - beam_frame_driver.c: pay beam debt before a slice and cap the slice at the
   next IRQ match (hero-select split timing).
+- beam_frame_driver.c/.h: save-state hooks that store the CPU registers,
+  resume PC and WAI flag, and a hardware-reset hook that resets them.
 - interp_bridge.c/.h: `g_interp_bridge_master_scale_pct` (CPU overclock for
   interpreted code).
 - rom_image_verify.c/.h, mod_runtime.cpp, desktop/host_main.c/.h:

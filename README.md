@@ -21,50 +21,31 @@ Fully working.
 
 ## Features
 
-- **Widescreen** (Mods page): 16:9, 21:9, 32:9, or fit to window. Races render
-  wider; the HUD anchors to the screen edges; menus and the title stay 4:3.
-- **30 FPS game logic** (Mods page, on by default): the race logic runs at
-  30 updates per second instead of 20, with the original pacing.
-- **Motion interpolation** (Mods page, on by default): present at the display
-  refresh or a fixed 90-360 Hz, blending background scrolling and sprite
-  positions between the game's logic updates (every 2nd field with the 30 FPS
-  feature, every 3rd without). Costs 1 frame of display delay. The F readout
-  shows a second line: game updates, presented frames, interpolated frames and
-  simulated fields per second.
-- **CPU overclock** (Mods page, on by default): charges CPU instructions fewer
-  master clocks during races so the game's logic never overruns its frame
-  budget. Auto is 150% with the 30 FPS feature on, which otherwise drops to
-  about 26-28 updates per second in busy scenes, and 100% with it off. The
-  game's update rate is divider-driven, so a faster CPU does not change game
-  speed.
-- **NTSC shaders**: `ntsc-composite`, `ntsc-svideo`, `ntsc-rgb`, and
-  `ntsc-monochrome` mimic Snes9x's Blargg NTSC filter. Hue, saturation,
-  contrast, brightness, sharpness, gamma, artifacts, fringing, bleed,
-  resolution, scanline intensity (12.5% default), and merge-fields are shader
-  parameters (`ntsc_*`), settable per preset in the `.glslp`.
-- Save states with a 12-slot browser and thumbnails (**F7** or Select + R),
-  quick slots F1-F10, rewind filmstrip (**F8** or Select + R3). Rewind depth
-  and interval are set in the launcher.
-- Display shaders (CRT Soft, LCD Grid, Sharp, Warm Composite, or your own
-  `.glsl`/`.glslp` dropped into `assets/shaders/`) and the three SNES pixel
-  aspects (4:3, 8:7, 1:1).
-- **MSU-1 music** (Mods page): point the feature at a folder holding a
-  Rock N' Roll Racing MSU-1 pack (`.pcm` tracks plus its `.ips` or `.bps`
-  patch). The patch is applied in memory, the stock ROM is never modified, and
-  the patched cartridge runs through the interpreter. MSU-1 save states live
-  in `saves/msu1/` and are not interchangeable with stock ones.
-- Gamepads through SDL, rebindable keys and hotkeys in the launcher, and the
-  in-game launcher (Ctrl+L or Select + L3).
+- **Widescreen** (Mods): 16:9, 21:9, 32:9 or fit to window. Races only; menus
+  stay 4:3.
+- **30 FPS** (Mods, on by default): race logic runs at 30 updates per second
+  instead of 20.
+- **Motion interpolation** (Mods, on by default): smooth motion at your
+  display's refresh rate (or a fixed 90-360 Hz). Adds 1 frame of delay.
+- **CPU overclock** (Mods, on by default): prevents slowdown in busy races.
+  Game speed does not change.
+- **MSU-1 music** (Mods): pick a folder with an MSU-1 pack (`.pcm` tracks plus
+  its `.ips` or `.bps` patch). Your ROM file is never modified. MSU-1 save
+  states are kept apart, in `saves/msu1/`.
+- **Save states**: Shift+F1-F10 to save, F1-F10 to load. F11 opens a save-state
+  menu with 12 slots and screenshots; F12 or Select + R3 rewinds.
+- **Shaders**: NTSC (composite, S-Video, RGB, monochrome), CRT Soft, LCD Grid,
+  Sharp, Warm Composite, or your own in `assets/shaders/`. Pixel aspect 4:3,
+  8:7 or 1:1.
+- Gamepads, rebindable keys, and an in-game launcher (Ctrl+L or Select + L3).
+  F shows the FPS counter.
 
 ### Widescreen notes
 
-The game only streams track tiles a few pixels past the native 256-pixel
-view. The port keeps a world-keyed cache of every tile the native view has
-shown, so margins are exact for any area seen before (from the second lap
-on). On the first visit, the outermost part of the leading margin can show
-the tilemap's wrapped content until the game streams it. Cars are emitted by
-the game only within roughly 128 px of the native view, so at 32:9 they can
-pop in at the far margins.
+The game only draws the track a few pixels past its original 256-pixel view,
+so the port fills the extra space with tiles it has already seen. From the
+second lap on, the edges are complete; on the first lap the outer edge can
+briefly show wrong tiles. At 32:9, cars far from the center can pop in.
 
 ## ROM identity
 

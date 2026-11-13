@@ -188,7 +188,6 @@ static const SnesDesktopHostGame kGameHost = {
     .num_players         = 2,
     .sram_path           = NULL,
     .native_widescreen   = 1,
-    .state_menu_hotkeys  = 1,
     .state_menu_no_pad_chord = 1,
     .display_aspect_supported = 1,
     .shader_supported    = 1,

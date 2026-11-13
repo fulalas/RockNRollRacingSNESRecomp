@@ -1,8 +1,16 @@
 diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
-index d6086b3..bb7aad6 100644
+index d6086b3..1b7b58e 100644
 --- a/runner/src/beam_frame_driver.c
 +++ b/runner/src/beam_frame_driver.c
-@@ -169,8 +169,22 @@ void snes_beam_frame_driver_run_frame(void) {
+@@ -20,6 +20,7 @@
+ #include "snes/interp_bridge.h"
+ #include "snes/ppu.h"
+ #include "snes/sa1.h"
++#include "snes/saveload.h"
+ #include "snes/snes.h"
+ #include "snes/superfx.h"
+ 
+@@ -169,8 +170,22 @@ void snes_beam_frame_driver_run_frame(void) {
       * and skipped the title. */
      if (s_wai_halted && irq_line_asserted())
        s_wai_halted = false;
@@ -26,6 +34,83 @@ index d6086b3..bb7aad6 100644
        (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);
        interp_bridge_set_master_deadline(0);
        update_resume_pc();
+@@ -269,3 +284,55 @@ void snes_beam_frame_driver_reset(void) {
+   s_resume_pc = 0;
+   s_wai_halted = false;
+ }
++
++void snes_beam_frame_driver_hardware_reset(void) {
++  const uint64_t cycles = g_cpu.cycles;
++  const uint64_t master = g_cpu.master_cycles;
++  const uint64_t coprocessor = g_cpu.coprocessor_master_cycles;
++  cpu_state_init(&g_cpu, g_cpu.ram);
++  g_cpu.cycles = cycles;
++  g_cpu.master_cycles = master;
++  g_cpu.coprocessor_master_cycles = coprocessor;
++  snes_beam_frame_driver_reset();
++}
++
++void snes_beam_frame_driver_state_save(SaveLoadInfo *sli) {
++  CpuState cpu = g_cpu;
++  cpu.ram = NULL;
++  cpu.host_return_valid = 0;
++  cpu.cycles = cpu.master_cycles = cpu.coprocessor_master_cycles = 0;
++  uint32_t size = sizeof(cpu);
++  uint8_t wai = s_wai_halted;
++  sli->func(sli, &size, sizeof(size));
++  sli->func(sli, &cpu, sizeof(cpu));
++  sli->func(sli, &s_resume_pc, sizeof(s_resume_pc));
++  sli->func(sli, &wai, sizeof(wai));
++}
++
++void snes_beam_frame_driver_state_load(SaveLoadInfo *sli, uint32_t version) {
++  (void)version;
++  uint32_t size = 0, pc = 0;
++  uint8_t wai = 0;
++  CpuState cpu = g_cpu;
++  if (RtlStateBytesRemaining(sli) <
++      sizeof(size) + sizeof(cpu) + sizeof(pc) + sizeof(wai)) {
++    RtlStateStreamFail(sli);
++    return;
++  }
++  sli->func(sli, &size, sizeof(size));
++  if (size != sizeof(cpu)) {
++    RtlStateStreamFail(sli);
++    return;
++  }
++  sli->func(sli, &cpu, sizeof(cpu));
++  sli->func(sli, &pc, sizeof(pc));
++  sli->func(sli, &wai, sizeof(wai));
++  cpu.ram = g_cpu.ram;
++  cpu.host_return_valid = g_cpu.host_return_valid;
++  cpu.cycles = g_cpu.cycles;
++  cpu.master_cycles = g_cpu.master_cycles;
++  cpu.coprocessor_master_cycles = g_cpu.coprocessor_master_cycles;
++  g_cpu = cpu;
++  s_resume_pc = pc;
++  s_wai_halted = wai != 0;
++}
+diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
+index 60804fc..9363c52 100644
+--- a/runner/src/beam_frame_driver.h
++++ b/runner/src/beam_frame_driver.h
+@@ -1,5 +1,6 @@
+ #ifndef SNESRECOMP_BEAM_FRAME_DRIVER_H
+ #define SNESRECOMP_BEAM_FRAME_DRIVER_H
++#include <stdint.h>
+ 
+ /* Beam-aligned frame driver for whole-program LLE ports.
+  *
+@@ -28,5 +29,9 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+     SnesBeamRasterObserver *observer, void *context);
+ /* Forget the booted machine: the next frame starts from the reset vector. */
+ void snes_beam_frame_driver_reset(void);
++void snes_beam_frame_driver_hardware_reset(void);
++struct SaveLoadInfo;
++void snes_beam_frame_driver_state_save(struct SaveLoadInfo *sli);
++void snes_beam_frame_driver_state_load(struct SaveLoadInfo *sli, uint32_t version);
+ 
+ #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
 index 3bc3905..9977a33 100644
 --- a/runner/src/desktop/host_main.c
