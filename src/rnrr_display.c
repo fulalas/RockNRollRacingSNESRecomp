@@ -27,6 +27,7 @@ enum {
     INTERP_MAX_SCROLL = 48,
     INTERP_MAX_OBJ = 24,
     KEY_PERIOD_MAX = 3,
+    KEY_MINOR_LINES = 2,
 };
 
 volatile uint16_t g_rnrr_cull_left = 0xffc0;
@@ -110,6 +111,7 @@ static FrameRecord s_rec[2];
 static FrameRecord s_key[2];
 static int s_key_cur;
 static unsigned s_key_field;
+static unsigned s_regs_field;
 static unsigned s_key_period = 1;
 static uint8_t s_key_hist[8];
 static unsigned s_key_hist_pos;
@@ -123,6 +125,18 @@ static unsigned key_period_mode(void)
         if (n > best_n) { best_n = n; best = p; }
     }
     return best;
+}
+
+static unsigned regs_lines_changed(const FrameRecord *a, const FrameRecord *b,
+                                   unsigned limit, unsigned *first)
+{
+    unsigned n = 0;
+    for (unsigned l = 1; l <= 224 && n < limit; l++) {
+        if (!memcmp(a->regs[l].b, b->regs[l].b, PPU_SAVESTATE_REGS_SIZE)) continue;
+        if (!n && first) *first = l;
+        n++;
+    }
+    return n;
 }
 
 static void key_reset(void)
@@ -798,26 +812,27 @@ void RnrrEndSimFrame(const uint8_t *field, unsigned number)
     {
         const FrameRecord *key = &s_key[s_key_cur];
         s_perf.sim++;
-        int regs_changed = !key->valid || memcmp(rec->regs, key->regs, sizeof(rec->regs)) != 0;
+        unsigned changed_lines = key->valid ? regs_lines_changed(rec, key, KEY_MINOR_LINES + 1, NULL) : 0;
+        int regs_changed = !key->valid || changed_lines > KEY_MINOR_LINES;
         int oam_changed = !key->valid || memcmp(rec->oam, key->oam, sizeof(rec->oam)) != 0 ||
                           memcmp(rec->high_oam, key->high_oam, sizeof(rec->high_oam)) != 0;
-        if (regs_changed || (oam_changed && number - s_key_field >= s_key_period)) {
+        if (regs_changed || ((oam_changed || changed_lines) && number - s_key_field >= s_key_period)) {
             s_perf.upd++;
             if (key->valid && getenv("RNRR_LERP_LOG")) {
-                unsigned nr = 0, no = 0, nh = 0, first = 0;
-                for (unsigned l = 1; l <= 224; l++)
-                    if (memcmp(rec->regs[l].b, key->regs[l].b, PPU_SAVESTATE_REGS_SIZE)) { nr++; if (!first) first = l; }
+                unsigned no = 0, nh = 0, first = 0;
+                unsigned nr = regs_lines_changed(rec, key, 224, &first);
                 for (unsigned i = 0; i < 0x100; i++) if (rec->oam[i] != key->oam[i]) { no++; if (!first) first = 1000 + i; }
                 for (unsigned i = 0; i < 0x20; i++) nh += rec->high_oam[i] != key->high_oam[i];
                 const Ppu *a = (const Ppu *)rec->regs[100].b, *b = (const Ppu *)key->regs[100].b;
                 fprintf(stderr, "[rnrr-upd] field=%u race=%d oc=%u regs_lines=%u first=%u oam_words=%u hoam=%u h1=%u->%u v1=%u->%u\n",
                         number, s_race_frame, s_overclock, nr, first, no, nh, b->hScroll[0], a->hScroll[0], b->vScroll[0], a->vScroll[0]);
             }
-            unsigned gap = number - s_key_field;
-            if (key->valid && gap <= KEY_PERIOD_MAX) {
+            unsigned gap = regs_changed ? number - s_regs_field : number - s_key_field;
+            if (key->valid && (regs_changed || gap >= 2) && gap <= KEY_PERIOD_MAX) {
                 s_key_hist[s_key_hist_pos++ & 7] = (uint8_t)gap;
                 s_key_period = key_period_mode();
             }
+            if (regs_changed) s_regs_field = number;
             s_key_cur ^= 1;
             memcpy(&s_key[s_key_cur], rec, sizeof(*rec));
             s_key_field = number;
