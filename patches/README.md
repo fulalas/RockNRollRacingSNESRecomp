@@ -1,13 +1,22 @@
 Local changes to the two submodules, as `git diff` output against the pinned
 commits. CMake configure and `tools/regen.sh` apply them automatically
 (`tools/apply_patches.sh`; already-applied patches are skipped). After moving
-a submodule pin, regenerate the file with `git -C <submodule> diff`.
+a submodule pin, regenerate the file with `git -C <submodule> diff`. A
+checkout that still has an older version of a patch applied must reset the
+submodule first (`git -C snesrecomp checkout .`), or the patch will not apply.
 
 snesrecomp.patch
 - beam_frame_driver.c: pay beam debt before a slice and cap the slice at the
   next IRQ match (hero-select split timing).
 - beam_frame_driver.c/.h: save-state hooks that store the CPU registers,
-  resume PC and WAI flag, and a hardware-reset hook that resets them.
+  resume PC and WAI flag, and a hardware-reset hook that resets them. Both
+  also set the interpreter's resume PC, and a load clears the PPU raster
+  journal so register values from before the load are not replayed. After
+  each run of guest code the driver takes the interpreter's resume PC only if
+  that run changed it.
+- snes/ppu.c/.h, common_rtl.c: the run-ahead rollback also restores the VRAM
+  and CGRAM write ports (address, increment, buffers); the speculative frame
+  moved them and the real frame then wrote graphics to the wrong place.
 - interp_bridge.c/.h: `g_interp_bridge_master_scale_pct` (CPU overclock for
   interpreted code).
 - rom_image_verify.c/.h, mod_runtime.cpp, desktop/host_main.c/.h:

@@ -1,5 +1,5 @@
 diff --git a/runner/src/beam_frame_driver.c b/runner/src/beam_frame_driver.c
-index d6086b3..1b7b58e 100644
+index d6086b3..0651936 100644
 --- a/runner/src/beam_frame_driver.c
 +++ b/runner/src/beam_frame_driver.c
 @@ -20,6 +20,7 @@
@@ -10,17 +10,42 @@ index d6086b3..1b7b58e 100644
  #include "snes/snes.h"
  #include "snes/superfx.h"
  
-@@ -169,8 +170,22 @@ void snes_beam_frame_driver_run_frame(void) {
-      * and skipped the title. */
+@@ -53,7 +54,9 @@ static uint32_t reset_vector(void) { return read_vector(0x00FFFCu); }
+ static uint32_t nmi_vector(void) { return read_vector(0x00FFEAu); }
+ static uint32_t irq_vector(void) { return read_vector(0x00FFEEu); }
+ 
+-static void update_resume_pc(void) {
++static void update_resume_pc(uint64_t resume_writes) {
++  if (interp_bridge_resume_total() == resume_writes)
++    return;
+   uint32_t resume = interp_bridge_lle_resume_pc();
+   if (resume)
+     s_resume_pc = resume;
+@@ -106,12 +109,13 @@ static void run_interrupt(uint32_t vector, uint64_t deadline) {
+    * The bridge yields at the instruction that latched the IRQ, so the handler
+    * already starts where the real CPU would take it. */
+   cpu_push_interrupt_frame_at(&g_cpu, s_resume_pc);
++  const uint64_t resume_writes = interp_bridge_resume_total();
+   interp_bridge_set_master_deadline(deadline);
+   (void)interp_bridge_run_interrupt(&g_cpu, vector);
+   /* A deadline left armed stays true for every AOT block prologue afterwards
+    * and turns each compiled body into an immediate yield. */
+   interp_bridge_set_master_deadline(0);
+-  update_resume_pc();
++  update_resume_pc(resume_writes);
+ }
+ 
+ void snes_beam_frame_driver_run_frame(void) {
+@@ -170,10 +174,25 @@ void snes_beam_frame_driver_run_frame(void) {
      if (s_wai_halted && irq_line_asserted())
        s_wai_halted = false;
-+    if (!s_wai_halted && !irq_wanted() && beam_debt()) {
-+      snes_sync_master_clock(g_snes, g_cpu.master_cycles);
-+      cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
-+      continue;
-+    }
      if (!s_wai_halted && !irq_wanted()) {
 -      interp_bridge_set_master_deadline(frame_end);
++      if (beam_debt()) {
++        snes_sync_master_clock(g_snes, g_cpu.master_cycles);
++        cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);
++        continue;
++      }
 +      uint64_t slice_end = frame_end;
 +      if (!g_cpu._flag_I) {
 +        uint32_t to_match = snes_master_clocks_until_irq(g_snes);
@@ -30,14 +55,21 @@ index d6086b3..1b7b58e 100644
 +            slice_end = at;
 +        }
 +      }
++      const uint64_t resume_writes = interp_bridge_resume_total();
 +      interp_bridge_set_master_deadline(slice_end);
        (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);
        interp_bridge_set_master_deadline(0);
-       update_resume_pc();
-@@ -269,3 +284,55 @@ void snes_beam_frame_driver_reset(void) {
+-      update_resume_pc();
++      update_resume_pc(resume_writes);
+       if (interp_bridge_lle_took_wai())
+         s_wai_halted = true;
+     }
+@@ -268,4 +287,60 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
+ void snes_beam_frame_driver_reset(void) {
    s_resume_pc = 0;
    s_wai_halted = false;
- }
++  interp_bridge_set_lle_resume_pc(0);
++}
 +
 +void snes_beam_frame_driver_hardware_reset(void) {
 +  const uint64_t cycles = g_cpu.cycles;
@@ -89,7 +121,10 @@ index d6086b3..1b7b58e 100644
 +  g_cpu = cpu;
 +  s_resume_pc = pc;
 +  s_wai_halted = wai != 0;
-+}
++  ppu_rasterReset();
++  if (interp_bridge_lle_resume_pc() != pc)
++    interp_bridge_set_lle_resume_pc(pc);
+ }
 diff --git a/runner/src/beam_frame_driver.h b/runner/src/beam_frame_driver.h
 index 60804fc..9363c52 100644
 --- a/runner/src/beam_frame_driver.h
@@ -111,6 +146,19 @@ index 60804fc..9363c52 100644
 +void snes_beam_frame_driver_state_load(struct SaveLoadInfo *sli, uint32_t version);
  
  #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */
+diff --git a/runner/src/common_rtl.c b/runner/src/common_rtl.c
+index a56966b..0309105 100644
+--- a/runner/src/common_rtl.c
++++ b/runner/src/common_rtl.c
+@@ -1090,7 +1090,7 @@ bool RtlLoadSnapshotFromMemory(const void *data, size_t size) {
+  */
+ 
+ #define RTL_RB_RESIDUE_MAGIC 0x53524252u /* 'RBRS' */
+-#define RTL_RB_RESIDUE_VERSION 7u
++#define RTL_RB_RESIDUE_VERSION 8u
+ 
+ typedef struct RtlRollbackResidue {
+   uint32 magic;
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
 index 3bc3905..9977a33 100644
 --- a/runner/src/desktop/host_main.c
@@ -445,10 +493,40 @@ index e01e3ba..8a7b71e 100644
   * describe the same elapsed time. Extended-frame hosts use absolute sync;
   * legacy hosts and unmapped boot (e.g. Mega Man X's IPL polling) keep relative
 diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
-index 25dcfe0..f753bf1 100644
+index 25dcfe0..bdf3d0c 100644
 --- a/runner/src/snes/ppu.c
 +++ b/runner/src/snes/ppu.c
-@@ -838,7 +838,9 @@ void ppu_runLine(Ppu* ppu, int line) {
+@@ -152,6 +152,14 @@ void ppu_rb_residue_get(const Ppu *ppu, PpuRollbackResidue *out) {
+   memcpy(out->wsOamMotionSig, ppu->wsOamMotionSig, sizeof(out->wsOamMotionSig));
+   memcpy(out->wsOamMotionSeen, ppu->wsOamMotionSeen, sizeof(out->wsOamMotionSeen));
+   memcpy(out->wsOamMotionGrace, ppu->wsOamMotionGrace, sizeof(out->wsOamMotionGrace));
++  out->vramPointer = ppu->vramPointer;
++  out->vramReadBuffer = ppu->vramReadBuffer;
++  out->vramIncrementOnHigh = ppu->vramIncrementOnHigh ? 1u : 0u;
++  out->vramRemapMode = ppu->vramRemapMode;
++  out->vramIncrement = ppu->vramIncrement;
++  out->cgramPointer = ppu->cgramPointer;
++  out->cgramSecondWrite = ppu->cgramSecondWrite ? 1u : 0u;
++  out->cgramBuffer = ppu->cgramBuffer;
+ }
+ 
+ void ppu_rb_residue_set(Ppu *ppu, const PpuRollbackResidue *in) {
+@@ -166,6 +174,14 @@ void ppu_rb_residue_set(Ppu *ppu, const PpuRollbackResidue *in) {
+   memcpy(ppu->wsOamMotionSig, in->wsOamMotionSig, sizeof(in->wsOamMotionSig));
+   memcpy(ppu->wsOamMotionSeen, in->wsOamMotionSeen, sizeof(in->wsOamMotionSeen));
+   memcpy(ppu->wsOamMotionGrace, in->wsOamMotionGrace, sizeof(in->wsOamMotionGrace));
++  ppu->vramPointer = in->vramPointer;
++  ppu->vramReadBuffer = in->vramReadBuffer;
++  ppu->vramIncrementOnHigh = in->vramIncrementOnHigh != 0u;
++  ppu->vramRemapMode = in->vramRemapMode;
++  ppu->vramIncrement = in->vramIncrement;
++  ppu->cgramPointer = in->cgramPointer;
++  ppu->cgramSecondWrite = in->cgramSecondWrite != 0u;
++  ppu->cgramBuffer = in->cgramBuffer;
+ }
+ 
+ // Debug layer isolation: SNESRECOMP_LAYER_MASK is a bitmask of layers to keep
+@@ -838,7 +854,9 @@ void ppu_runLine(Ppu* ppu, int line) {
               sizeof(ppu->overlayBuffers[kPpuOverlaySource_Obj]));
      ppu->lineHasSprites = !PPU_forcedBlank(ppu) && ppu_evaluateSprites(ppu, line - 1);
  
@@ -459,6 +537,25 @@ index 25dcfe0..f753bf1 100644
        debug_server_on_ppu_line_drawn(line, 1, ppu->bgmode);
        PPU_T0; PpuDrawWholeLine(ppu, line); PPU_ACC(g_ppu_sec_line_ms);
  #ifdef SNESRECOMP_INTERP_PROFILE
+diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
+index 7e092bb..ac29787 100644
+--- a/runner/src/snes/ppu.h
++++ b/runner/src/snes/ppu.h
+@@ -692,6 +692,14 @@ typedef struct PpuRollbackResidue {
+   uint32_t wsOamMotionSig[128];
+   uint8_t  wsOamMotionSeen[16];
+   uint8_t  wsOamMotionGrace[128];
++  uint16_t vramPointer;
++  uint16_t vramReadBuffer;
++  uint8_t  vramIncrementOnHigh;
++  uint8_t  vramRemapMode;
++  uint8_t  vramIncrement;
++  uint8_t  cgramPointer;
++  uint8_t  cgramSecondWrite;
++  uint8_t  cgramBuffer;
+ } PpuRollbackResidue;
+ 
+ void ppu_rb_residue_get(const Ppu *ppu, PpuRollbackResidue *out);
 diff --git a/runner/src/snes_savestate_menu.c b/runner/src/snes_savestate_menu.c
 index f42f1ab..08e9c6a 100644
 --- a/runner/src/snes_savestate_menu.c
