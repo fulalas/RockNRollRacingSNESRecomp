@@ -9,6 +9,8 @@ BUILD="${BUILD:-$REPO/build-windows}"
 OUT="$REPO/release-windows"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 VERSION="$(tr -d '[:space:]' < "$REPO/VERSION")"
+ZIP="$OUT/$APP_NAME-windows-$VERSION-x64.zip"
+[ ! -e "$ZIP" ] || { echo "$ZIP already exists; bump VERSION first" >&2; exit 1; }
 : "${LLVM_MINGW_ROOT:?set LLVM_MINGW_ROOT to the unpacked llvm-mingw directory}"
 [ -n "$(ls -A "$REPO/src/gen" 2>/dev/null)" ] || { echo "src/gen is empty; run bash tools/regen.sh --rom <rom> first" >&2; exit 1; }
 
@@ -49,7 +51,5 @@ done
 for f in "$BUILD"/*.dll; do [ -f "$f" ] && cp "$f" "$PKG/"; done
 cp "$REPO/README.md" "$PKG/"
 [ -d "$REPO/licenses" ] && cp -r "$REPO/licenses" "$PKG/"
-ZIP="$OUT/$APP_NAME-windows-$VERSION-x64.zip"
-rm -f "$ZIP"
 (cd "$STAGE" && zip -qr "$ZIP" "$APP_NAME")
 ls -la "$ZIP"

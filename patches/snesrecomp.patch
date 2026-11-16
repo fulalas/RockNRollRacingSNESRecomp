@@ -159,8 +159,89 @@ index a56966b..0309105 100644
  
  typedef struct RtlRollbackResidue {
    uint32 magic;
+diff --git a/runner/src/desktop/host_clock.c b/runner/src/desktop/host_clock.c
+index c2a9529..824f6d6 100644
+--- a/runner/src/desktop/host_clock.c
++++ b/runner/src/desktop/host_clock.c
+@@ -14,8 +14,13 @@ void snes_host_clock_reset(SnesHostClock *c, double now,
+                              ? presentation_hz : 60};
+ }
+ 
++static double presentation_time(const SnesHostClock *c, double now) {
++  if (c->vsync_period <= 0) return now;
++  return now > c->next_presentation ? now + c->vsync_period : c->next_presentation;
++}
++
+ bool snes_host_clock_simulation_due(const SnesHostClock *c, double now) {
+-  return now >= c->next_simulation;
++  return presentation_time(c, now) >= c->next_simulation;
+ }
+ 
+ void snes_host_clock_simulation_done(SnesHostClock *c, double now,
+@@ -30,10 +35,18 @@ void snes_host_clock_simulation_done(SnesHostClock *c, double now,
+ }
+ 
+ bool snes_host_clock_presentation_due(const SnesHostClock *c, double now) {
++  if (c->vsync_period > 0) return now >= snes_host_clock_next_deadline(c);
+   return now >= c->next_presentation;
+ }
+ 
+ void snes_host_clock_presentation_done(SnesHostClock *c, double now) {
++  if (c->vsync_period > 0) {
++    double p = c->vsync_period, err = now - c->next_presentation;
++    if (err > p * 0.5) c->next_presentation = now + p;
++    else c->next_presentation += p + (err > -p * 0.5 ? err * 0.1 : 0);
++    ++c->presentations;
++    return;
++  }
+   double period = 1.0 / c->presentation_hz;
+   double overdue = fmax(0, now - c->next_presentation);
+   uint64_t missed = (uint64_t)floor(overdue / period);
+@@ -43,13 +56,21 @@ void snes_host_clock_presentation_done(SnesHostClock *c, double now) {
+ }
+ 
+ double snes_host_clock_alpha(const SnesHostClock *c, double now) {
+-  return fmax(0, fmin(1, 1 - (c->next_simulation - now) * c->simulation_hz));
++  double at = presentation_time(c, now);
++  return fmax(0, fmin(1, 1 - (c->next_simulation - at) * c->simulation_hz));
+ }
+ 
+ double snes_host_clock_next_deadline(const SnesHostClock *c) {
++  if (c->vsync_period > 0) return c->next_presentation - c->vsync_period * 1.5;
+   return fmin(c->next_simulation, c->next_presentation);
+ }
+ 
++void snes_host_clock_set_vsync(SnesHostClock *c, double period) {
++  if (c->vsync_period == period) return;
++  c->vsync_period = period;
++  if (period > 0) c->next_presentation = 0;
++}
++
+ bool snes_host_valid_fps(unsigned fps) {
+   return fps == 0 || fps == 60 || fps == 90 || fps == 120 || fps == 144 ||
+          fps == 165 || fps == 240 || fps == 360;
+diff --git a/runner/src/desktop/host_clock.h b/runner/src/desktop/host_clock.h
+index d5283d6..df48789 100644
+--- a/runner/src/desktop/host_clock.h
++++ b/runner/src/desktop/host_clock.h
+@@ -33,6 +33,7 @@ extern "C" {
+ typedef struct SnesHostClock {
+   double next_simulation, next_presentation;
+   double simulation_hz, presentation_hz;
++  double vsync_period;
+   uint64_t simulation_frames, presentations, missed_presentations;
+ } SnesHostClock;
+ 
+@@ -47,6 +48,7 @@ bool   snes_host_clock_presentation_due(const SnesHostClock *c, double now);
+ void   snes_host_clock_presentation_done(SnesHostClock *c, double now);
+ double snes_host_clock_alpha(const SnesHostClock *c, double now);
+ double snes_host_clock_next_deadline(const SnesHostClock *c);
++void   snes_host_clock_set_vsync(SnesHostClock *c, double period);
+ 
+ /* Which presentation rate to run at: an explicit fps if it is one the clock
+  * supports, else the display's refresh, clamped to a sane range. 0 = display. */
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
-index 3bc3905..9977a33 100644
+index 3bc3905..50a8dfc 100644
 --- a/runner/src/desktop/host_main.c
 +++ b/runner/src/desktop/host_main.c
 @@ -63,6 +63,7 @@
@@ -171,7 +252,88 @@ index 3bc3905..9977a33 100644
  #include "launcher_cache.h"
  #include "host_paths.h"
  #include "host_args.h"
-@@ -2707,6 +2708,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
+@@ -265,6 +266,7 @@ static uint16 g_seat_pad[kSnesHostPadSeats];
+ static int g_ppu_render_flags = 0;
+ static int g_snes_width = 256, g_snes_height = 224;
+ static double g_present_alpha = 1;
++static double g_last_swap_seconds;
+ static bool g_reset_clock;
+ static double g_simulation_hz = SNES_HOST_NTSC_HZ;
+ 
+@@ -360,6 +362,12 @@ static void WaitUntil(double deadline) {
+   }
+   ProfileEnd(kProfileWait, profile_start);
+ }
++static double VSyncShownAt(const SnesHostClock *c) {
++  double now = MonotonicSeconds();
++  if (g_last_swap_seconds >= c->vsync_period * 0.25) return now;
++  return now > c->next_presentation ? now : c->next_presentation;
++}
++
+ static double DisplayRefresh(void) {
+   if (!g_window) return 60;
+ #if SNESRECOMP_SDL3
+@@ -380,13 +388,31 @@ static double WantedPresentationHz(double refresh) {
+ }
+ static bool PresentationDecoupled(void) { return WantedPresentationHz(0) > 0; }
+ 
++static int VSyncLockDivisor(double refresh) {
++  if (g_config.vsync == kSnesVSync_Off) return 0;
++  double hz = WantedPresentationHz(refresh);
++  if (hz <= 0 || refresh < 1) return 0;
++  int n = (int)(refresh / hz + 0.5);
++  if (n < 1 || n > 4) return 0;
++  double off = refresh / n - hz;
++  if (off < 0) off = -off;
++  return off <= hz * 0.01 ? n : 0;
++}
++
++static double VSyncPeriod(double refresh) {
++  int n = VSyncLockDivisor(refresh);
++  return n ? n / refresh : 0;
++}
++
+ /* The swap interval this host wants: 0 immediate, 1 wait for the panel, -1
+  * late-swap-tearing ("adaptive" in the launcher -- sync above the refresh,
+- * immediate below, so a dropped frame tears instead of halving the rate).
+- * A decoupled presentation or an explicitly disabled frame delay paces
+- * elsewhere and must not also wait on the driver. */
++ * immediate below, so a dropped frame tears instead of halving the rate). */
+ static int VSyncInterval(void) {
+-  if (PresentationDecoupled() || g_config.disable_frame_delay) return 0;
++  if (g_config.disable_frame_delay) return 0;
++  if (PresentationDecoupled()) {
++    int n = VSyncLockDivisor(DisplayRefresh());
++    return n == 1 && g_config.vsync == kSnesVSync_Adaptive ? -1 : n;
++  }
+   switch (g_config.vsync) {
+     case kSnesVSync_Off:      return 0;
+     case kSnesVSync_Adaptive: return -1;
+@@ -410,6 +436,13 @@ static int g_sdl_audio_mixer_volume = SNESRECOMP_SDL_MIX_MAXVOLUME;
+ 
+ static struct RendererFuncs g_renderer_funcs;
+ 
++static void ReconfigurePresenter(void) {
++#ifndef __ANDROID__
++  snesrecomp_opengl_set_vsync(VSyncInterval());
++#endif
++  if (g_renderer_funcs.Reconfigure) g_renderer_funcs.Reconfigure();
++}
++
+ /* Set by the hotkeys; consumed once in the frame loop. */
+ static int g_savestate_menu_hotkey;
+ static int g_rewind_hotkey;
+@@ -1482,7 +1515,9 @@ static void DrawPpuFrameWithPerf(void) {
+ 
+   ProfileEnd(kProfileCompose, profile_start);
+   profile_start = ProfileStart();
++  double swap_start = MonotonicSeconds();
+   g_renderer_funcs.EndDraw();
++  g_last_swap_seconds = MonotonicSeconds() - swap_start;
+   ProfileEnd(kProfilePresent, profile_start);
+   RecordFrameTiming(g_present_frame);
+ }
+@@ -2707,6 +2742,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
    gi->known_sha256 = g_rom_identity_ok
        ? (const uint8_t (*)[32])&g_rom_sha256 : NULL;
    gi->num_known_sha256 = g_rom_identity_ok ? 1 : 0;
@@ -179,7 +341,19 @@ index 3bc3905..9977a33 100644
    /* Additive: a title catalogued by SHA-1 sets these instead of, or as
     * well as, the SHA-256 above. */
    gi->known_sha1_hex = game->known_sha1_hex;
-@@ -3213,6 +3215,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -2856,10 +2892,7 @@ static void ApplyLiveSettings(const Config *before) {
+       g_current_window_scale = IntMin(g_config.window_scale, kMaxWindowScale);
+     ChangeWindowScale(0);
+   }
+-#ifndef __ANDROID__
+-  snesrecomp_opengl_set_vsync(VSyncInterval());
+-#endif
+-  if (g_renderer_funcs.Reconfigure) g_renderer_funcs.Reconfigure();
++  ReconfigurePresenter();
+   if (g_config.frame_blend != before->frame_blend)
+     FrameBlendConfigure();
+   if (g_config.run_ahead != before->run_ahead)
+@@ -3213,6 +3246,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
        g_config.output_method, g_config.new_renderer, g_config.window_scale,
        g_config.fullscreen, g_config.enable_audio, g_config.audio_freq,
        g_config.audio_samples);
@@ -187,7 +361,7 @@ index 3bc3905..9977a33 100644
    PadGestureConfigure(&g_rewind_gesture, g_config.rewind_gesture, "Select+R3",
                        "rewind", "RewindGesture");
    if (game->in_game_launcher)
-@@ -3247,6 +3250,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3247,6 +3281,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
    static char rom_path_buf[1024];
    {
      g_rom_identity_ok = DecodeRomIdentity(g_rom_sha256, &g_rom_crc32);
@@ -195,7 +369,15 @@ index 3bc3905..9977a33 100644
      int rom_resolved_by_launcher = 0;
      char beside_exe[1024] = "";
      /* The ROM comes from the shared parser now: positional or --rom,
-@@ -3913,7 +3917,8 @@ error_reading:;
+@@ -3775,6 +3810,7 @@ error_reading:;
+   if (presentation_hz <= 0) presentation_hz = g_simulation_hz;
+   snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
+   double next_display_check = 0;
++  double vsync_period = -1;
+ 
+   /* Rewind ring: reads the env overrides and reserves slot headers; the
+    * buffer itself is allocated lazily on the first capture. */
+@@ -3913,7 +3949,8 @@ error_reading:;
            snes_savestate_menu_poll_nav(human, SDL_GetTicks());
          } else if (!snes_netplay_menu_paused()) {
            (void)snes_savestate_menu_poll_open(g_savestate_menu_hotkey
@@ -205,7 +387,45 @@ index 3bc3905..9977a33 100644
          }
          g_savestate_menu_hotkey = 0;
          if (snes_netplay_menu_ready() && !snes_savestate_menu_is_open())
-@@ -4170,7 +4175,7 @@ error_reading:;
+@@ -4009,18 +4046,26 @@ error_reading:;
+     bool paced_custom = PresentationDecoupled() && paced_realtime;
+     double video_now = MonotonicSeconds();
+     if (video_now >= next_display_check) {
+-      double hz = WantedPresentationHz(DisplayRefresh());
++      double refresh = DisplayRefresh();
++      double hz = WantedPresentationHz(refresh);
+       if (hz <= 0) hz = g_simulation_hz;
+       if (hz != presentation_hz) {
+         presentation_hz = video_clock.presentation_hz = hz;
+         video_clock.next_presentation = video_now;
+       }
++      double period = VSyncPeriod(refresh);
++      if (period != vsync_period) {
++        vsync_period = period;
++        ReconfigurePresenter();
++      }
+       next_display_check = video_now + 0.25;
+     }
+     if (g_reset_clock) {
+       snes_host_clock_reset(&video_clock, video_now, g_simulation_hz, presentation_hz);
+       g_reset_clock = false;
+     }
++    bool paced_vsync = paced_custom && vsync_period > 0;
++    snes_host_clock_set_vsync(&video_clock, paced_vsync ? vsync_period : 0);
+     if (paced_realtime && !snes_host_clock_simulation_due(&video_clock, MonotonicSeconds())) {
+       if (snes_host_clock_presentation_due(&video_clock, MonotonicSeconds())) {
+         if (paced_custom) {
+@@ -4031,7 +4076,8 @@ error_reading:;
+           ++presentations;
+           /* Count deadlines at dispatch, not after the render/upload cost:
+            * crossing the next deadline while drawing does not consume it. */
+-          snes_host_clock_presentation_done(&video_clock, presented_at);
++          snes_host_clock_presentation_done(&video_clock,
++                                            paced_vsync ? VSyncShownAt(&video_clock) : presented_at);
+         }
+       }
+       WaitUntil(paced_custom ? snes_host_clock_next_deadline(&video_clock)
+@@ -4170,7 +4216,7 @@ error_reading:;
      g_rewind_hotkey = 0;
      /* Exactly ONE poll_open per frame: it latches the previous word to edge
       * detect on, so a second call in the same frame eats the edge. */
@@ -214,6 +434,26 @@ index 3bc3905..9977a33 100644
      if (g_savestate_menu_hotkey) {
        g_savestate_menu_hotkey = 0;
        if (!snes_savestate_menu_is_open())
+@@ -4269,14 +4315,17 @@ error_reading:;
+     else
+       snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
+     if (!g_snes->disableRender &&
+-        (!paced_custom || snes_host_clock_presentation_due(&video_clock, MonotonicSeconds()) ||
++        (!paced_custom ||
++         (snes_host_clock_presentation_due(&video_clock, MonotonicSeconds()) &&
++          !(paced_vsync && snes_host_clock_simulation_due(&video_clock, MonotonicSeconds()))) ||
+          (run_frames && frameCtr >= run_frames))) {
+       double presented_at = MonotonicSeconds();
+       g_present_alpha = paced_custom && presentation_hz != g_simulation_hz
+           ? snes_host_clock_alpha(&video_clock, presented_at) : 1;
+       DrawPpuFrameWithPerf();
+       ++presentations;
+-      snes_host_clock_presentation_done(&video_clock, presented_at);
++      snes_host_clock_presentation_done(&video_clock,
++                                        paced_vsync ? VSyncShownAt(&video_clock) : presented_at);
+     }
+     if (run_frames && frameCtr >= run_frames) {
+       running = false;
 diff --git a/runner/src/desktop/host_main.h b/runner/src/desktop/host_main.h
 index 03b6f06..b27b1c4 100644
 --- a/runner/src/desktop/host_main.h
@@ -493,7 +733,7 @@ index e01e3ba..8a7b71e 100644
   * describe the same elapsed time. Extended-frame hosts use absolute sync;
   * legacy hosts and unmapped boot (e.g. Mega Man X's IPL polling) keep relative
 diff --git a/runner/src/snes/ppu.c b/runner/src/snes/ppu.c
-index 25dcfe0..bdf3d0c 100644
+index 25dcfe0..f0ef03f 100644
 --- a/runner/src/snes/ppu.c
 +++ b/runner/src/snes/ppu.c
 @@ -152,6 +152,14 @@ void ppu_rb_residue_get(const Ppu *ppu, PpuRollbackResidue *out) {
@@ -537,11 +777,150 @@ index 25dcfe0..bdf3d0c 100644
        debug_server_on_ppu_line_drawn(line, 1, ppu->bgmode);
        PPU_T0; PpuDrawWholeLine(ppu, line); PPU_ACC(g_ppu_sec_line_ms);
  #ifdef SNESRECOMP_INTERP_PROFILE
+@@ -3164,6 +3182,9 @@ typedef struct {
+   uint8_t hdmaen;
+   int count;
+   uint32_t dropped;
++  int oam_key;
++  uint16_t oam_before[0x100], oam_after[0x100];
++  uint8_t high_oam_before[0x20], high_oam_after[0x20];
+   PpuRasterEntry e[PPU_RASTER_MAX];
+ } PpuRasterField;
+ static PpuRasterField s_field[2];
+@@ -3178,6 +3199,10 @@ static int s_raster_hdmaen_pending;
+ static struct {
+   uint8_t oamAdr, oamInHigh, oamSecondWrite, oamBuffer;
+ } s_raster_port;
++static int s_raster_oam_phase;
++static unsigned s_raster_oam_switch_line;
++static uint16_t s_raster_live_oam[0x100];
++static uint8_t s_raster_live_high_oam[0x20];
+ 
+ /* Only the machine's PPU journals: the debug server and a few tools run
+  * ppu_write on scratch copies. */
+@@ -3213,6 +3238,7 @@ static void raster_snapshot(PpuRasterField *f, const Ppu *ppu) {
+   f->hdmaen = g_snesrecomp_last_hdmaen;
+   f->count = 0;
+   f->dropped = 0;
++  f->oam_key = -1;
+ }
+ 
+ void ppu_rasterBegin(Ppu *ppu) {
+@@ -3231,6 +3257,10 @@ void ppu_rasterFieldBoundary(void) {
+   if (!s_raster_armed || !ppu)
+     return;
+   s_raster_rendering = 0;
++  if (s_field[s_raster_cur].oam_key >= 0) {
++    memcpy(s_field[s_raster_cur].oam_after, ppu->oam, sizeof(ppu->oam));
++    memcpy(s_field[s_raster_cur].high_oam_after, ppu->highOam, sizeof(ppu->highOam));
++  }
+   s_raster_cur ^= 1;
+   s_raster_have_completed = 1;
+   raster_snapshot(&s_field[s_raster_cur], ppu);
+@@ -3242,6 +3272,7 @@ void ppu_rasterReset(void) {
+   s_raster_rendering = 0;
+   s_raster_render = NULL;
+   s_raster_hdmaen_pending = 0;
++  s_raster_oam_switch_line = 0;
+ }
+ 
+ void ppu_rasterRecord(uint16_t reg, uint16_t line, uint8_t val) {
+@@ -3261,6 +3292,17 @@ void ppu_rasterRecord(uint16_t reg, uint16_t line, uint8_t val) {
+   f->count++;
+ }
+ 
++static void raster_note_oam_write(const Ppu *ppu, uint16_t line) {
++  PpuRasterField *f = &s_field[s_raster_cur];
++  if (f->oam_key >= 0 || line < 1 || line > 224)
++    return;
++  if (!s_raster_armed || s_raster_rendering || g_ppu_wlog_src == kPpuWlogReplay)
++    return;
++  f->oam_key = raster_key(line);
++  memcpy(f->oam_before, ppu->oam, sizeof(ppu->oam));
++  memcpy(f->high_oam_before, ppu->highOam, sizeof(ppu->highOam));
++}
++
+ int ppu_rasterTakeHdmaen(uint8_t *out) {
+   if (!s_raster_hdmaen_pending) return 0;
+   s_raster_hdmaen_pending = 0;
+@@ -3274,6 +3316,7 @@ int ppu_rasterTakeHdmaen(uint8_t *out) {
+  * 1's HDMA write would stomp it. */
+ void ppu_rasterRenderBegin(Ppu *ppu) {
+   const PpuRasterField *f;
++  s_raster_oam_switch_line = 0;
+   if (!s_raster_armed) return;
+   /* Before any field has completed (the first frame), the recording one is
+    * all there is. */
+@@ -3283,6 +3326,13 @@ void ppu_rasterRenderBegin(Ppu *ppu) {
+   s_raster_port.oamInHigh = ppu->oamInHigh;
+   s_raster_port.oamSecondWrite = ppu->oamSecondWrite;
+   s_raster_port.oamBuffer = ppu->oamBuffer;
++  s_raster_oam_phase = s_raster_have_completed && f->oam_key >= 0;
++  if (s_raster_oam_phase) {
++    memcpy(s_raster_live_oam, ppu->oam, sizeof(ppu->oam));
++    memcpy(s_raster_live_high_oam, ppu->highOam, sizeof(ppu->highOam));
++    memcpy(ppu->oam, f->oam_before, sizeof(ppu->oam));
++    memcpy(ppu->highOam, f->high_oam_before, sizeof(ppu->highOam));
++  }
+   memcpy(&ppu->inidisp, f->regs, PPU_SAVESTATE_REGS_SIZE);
+   ppu->scrollPrev = f->scrollPrev;
+   ppu->scrollPrev2 = f->scrollPrev2;
+@@ -3324,6 +3374,17 @@ void ppu_rasterApplyLine(Ppu *ppu, int line) {
+     }
+     s_raster_next++;
+   }
++  if (s_raster_oam_phase == 1 &&
++      (limit >= f->oam_key || (PPU_forcedBlank(ppu) && f->oam_key - (limit + 1) <= 32))) {
++    memcpy(ppu->oam, f->oam_after, sizeof(ppu->oam));
++    memcpy(ppu->highOam, f->high_oam_after, sizeof(ppu->highOam));
++    s_raster_oam_phase = 2;
++    s_raster_oam_switch_line = (unsigned)line + 1;
++  }
++}
++
++unsigned ppu_rasterOamSwitchLine(void) {
++  return s_raster_oam_switch_line;
+ }
+ 
+ /* The render reconstructed the completed field. Writes the guest has made
+@@ -3346,6 +3407,11 @@ void ppu_rasterRenderEnd(Ppu *ppu) {
+   ppu->oamInHigh = s_raster_port.oamInHigh;
+   ppu->oamSecondWrite = s_raster_port.oamSecondWrite;
+   ppu->oamBuffer = s_raster_port.oamBuffer;
++  if (s_raster_oam_phase) {
++    memcpy(ppu->oam, s_raster_live_oam, sizeof(ppu->oam));
++    memcpy(ppu->highOam, s_raster_live_high_oam, sizeof(ppu->highOam));
++    s_raster_oam_phase = 0;
++  }
+ }
+ 
+ /* Snapshot of the journal as the renderer will consume it, for the debug
+@@ -3402,8 +3468,11 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+   /* Every path into the PPU -- CPU stores, DMA, beam HDMA -- is history the
+    * raster journal must see; recording here rather than in one caller is
+    * what makes that true. */
+-  if (ppu == raster_machine_ppu())
++  if (ppu == raster_machine_ppu()) {
+     ppu_rasterRecord((uint16_t)(0x2100u | adr), g_snes->vPos, val);
++    if (adr == 0x04)
++      raster_note_oam_write(ppu, g_snes->vPos);
++  }
+ //  if (adr != 24 && adr != 25)
+ //    printf("ppu_write(%d, %d)\n", adr, val);
+   switch(adr) {
 diff --git a/runner/src/snes/ppu.h b/runner/src/snes/ppu.h
-index 7e092bb..ac29787 100644
+index 7e092bb..e413841 100644
 --- a/runner/src/snes/ppu.h
 +++ b/runner/src/snes/ppu.h
-@@ -692,6 +692,14 @@ typedef struct PpuRollbackResidue {
+@@ -605,6 +605,7 @@ void ppu_rasterBegin(Ppu *ppu);
+ void ppu_rasterRenderBegin(Ppu *ppu);
+ void ppu_rasterRenderEnd(Ppu *ppu);
+ int  ppu_rasterTakeHdmaen(uint8_t *out);
++unsigned ppu_rasterOamSwitchLine(void);
+ void ppu_rasterRecord(uint16_t reg, uint16_t line, uint8_t val);
+ void ppu_rasterApplyLine(Ppu *ppu, int line);
+ /* Called by the beam walk when it reaches V=225. */
+@@ -692,6 +693,14 @@ typedef struct PpuRollbackResidue {
    uint32_t wsOamMotionSig[128];
    uint8_t  wsOamMotionSeen[16];
    uint8_t  wsOamMotionGrace[128];
@@ -612,3 +991,52 @@ index f905eca..8948b3e 100644
  /* Hand over the frame the player is looking at, in the PPU's native XRGB
   * layout, so a save taken from this point carries a thumbnail of it. Cheap
   * (one downsample to 128x112); ignored while the menu is open, so the
+diff --git a/tests/host/host_clock_test.c b/tests/host/host_clock_test.c
+index 24ac636..0521698 100644
+--- a/tests/host/host_clock_test.c
++++ b/tests/host/host_clock_test.c
+@@ -81,6 +81,44 @@ int main(void) {
+   assert(snes_host_presentation_hz(120, 165) == 120);
+   assert(snes_host_presentation_hz(100, 165) == 165);
+ 
++  const double vblank = 1 / 59.951;
++  SnesHostClock locked;
++  snes_host_clock_reset(&locked, 0.0123, sim, 59.951);
++  snes_host_clock_set_vsync(&locked, vblank);
++  double now = 0.0123, fields = 0, last = 0;
++  for (int i = 0; i < 6000; ++i) {
++    while (snes_host_clock_simulation_due(&locked, now)) {
++      now += 0.002;
++      snes_host_clock_simulation_done(&locked, now, false, 1);
++      ++fields;
++    }
++    double pos = fields - 1 + snes_host_clock_alpha(&locked, now);
++    now = ceil((now + 0.001 + (i % 7) * 0.0003) / vblank) * vblank + 0.0002;
++    snes_host_clock_presentation_done(&locked, now);
++    if (i > 10) assert(fabs(pos - last - sim * vblank) < 1e-3);
++    last = pos;
++    double deadline = snes_host_clock_next_deadline(&locked);
++    if (deadline > now) now = deadline;
++  }
++
++  SnesHostClock unblocked;
++  snes_host_clock_reset(&unblocked, 0, sim, 60);
++  snes_host_clock_set_vsync(&unblocked, 1 / 60.0);
++  now = 0;
++  while (now < 1) {
++    while (snes_host_clock_simulation_due(&unblocked, now))
++      snes_host_clock_simulation_done(&unblocked, now, false, 1);
++    now += 0.0005;
++    snes_host_clock_presentation_done(&unblocked, now);
++    double deadline = snes_host_clock_next_deadline(&unblocked);
++    if (deadline > now) now = deadline;
++  }
++  assert(unblocked.presentations >= 59 && unblocked.presentations <= 62);
++
++  snes_host_clock_set_vsync(&unblocked, 0);
++  snes_host_clock_presentation_done(&unblocked, now);
++  assert(unblocked.missed_presentations <= 1);
++
+   puts("host_clock: all checks passed");
+   return 0;
+ }

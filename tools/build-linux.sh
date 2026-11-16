@@ -29,6 +29,8 @@ done
 
 GEN_DIR="$REPO/src/gen"
 SUFFIX=""
+APP="$OUT/$APP_NAME$SUFFIX-linux-$VERSION-x86_64.AppImage"
+[ ! -e "$APP" ] || { echo "$APP already exists; bump VERSION first" >&2; exit 1; }
 [ -n "$BUILD" ] || BUILD="$REPO/build-linux-prod$SUFFIX"
 [ -n "$TOOLS_DIR" ] || TOOLS_DIR="$BUILD/appimage-tools"
 [ -d "$GEN_DIR" ] && ls "$GEN_DIR"/*.c >/dev/null 2>&1 || {
@@ -143,8 +145,6 @@ exec "\$HERE/usr/bin/$APP_NAME" "\$@"
 APPRUN
 chmod +x "$APPDIR/AppRun"
 
-APP="$OUT/$APP_NAME$SUFFIX-linux-$VERSION-x86_64.AppImage"
-rm -f "$APP"
 RUNTIME_ARGS=()
 [ -f "$TOOLS_DIR/runtime-x86_64" ] && RUNTIME_ARGS=(--runtime-file "$TOOLS_DIR/runtime-x86_64")
 ARCH=x86_64 $APPIMAGETOOL "${RUNTIME_ARGS[@]}" "$APPDIR" "$APP"

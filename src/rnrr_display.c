@@ -102,12 +102,19 @@ typedef struct {
     RegBlock regs[225];
     uint16_t oam[0x100];
     uint8_t high_oam[0x20];
+    uint16_t oam2[0x100];
+    uint8_t high_oam2[0x20];
+    unsigned oam_split;
+    unsigned bar_start;
     unsigned number;
     int valid;
     int extra;
 } FrameRecord;
 
 static FrameRecord s_rec[2];
+static unsigned s_bar_hist[16];
+static unsigned s_bar_hist_pos;
+static int s_rec_observed;
 static FrameRecord s_key[2];
 static int s_key_cur;
 static unsigned s_key_field;
@@ -306,23 +313,23 @@ static int wrap_delta(int cur, int prev)
     return ((cur - prev + 512) & 1023) - 512;
 }
 
-static int view_for_scroll(uint16_t h, uint16_t v)
+static int view_for_scroll(uint16_t h, uint16_t v, unsigned used)
 {
     for (int i = 0; i < CACHE_VIEWS; i++)
-        if ((s_cam[i][0] & 0x3ff) == h && (s_cam[i][1] & 0x3ff) == v) {
+        if (!(used & (1u << i)) && (s_cam[i][0] & 0x3ff) == h && (s_cam[i][1] & 0x3ff) == v) {
             s_track[i].valid = 1; s_track[i].h = h; s_track[i].v = v;
             s_track[i].fx = s_cam[i][0]; s_track[i].fy = s_cam[i][1];
             return i;
         }
     for (int i = 0; i < CACHE_VIEWS; i++)
-        if ((s_cam[i][0] & 0x3ff) == h) {
+        if (!(used & (1u << i)) && (s_cam[i][0] & 0x3ff) == h) {
             s_track[i].valid = 1; s_track[i].h = h; s_track[i].v = v;
             s_track[i].fx = s_cam[i][0]; s_track[i].fy = s_cam[i][1];
             return i;
         }
     int best = -1, best_d = 1 << 30;
     for (int i = 0; i < CACHE_VIEWS; i++) {
-        if (!s_track[i].valid) continue;
+        if (!s_track[i].valid || (used & (1u << i))) continue;
         int dh = wrap_delta(h, s_track[i].h), dv = wrap_delta(v, s_track[i].v);
         int d = dh * dh + dv * dv;
         if (d < best_d) { best_d = d; best = i; }
@@ -444,6 +451,7 @@ static void tag_vram_changes(void)
 static void build_groups(const FrameRecord *rec)
 {
     s_ngroups = 0;
+    unsigned used = 0;
     unsigned line = 1;
     while (line <= 224 && s_ngroups < MAX_VIEW_GROUPS) {
         const Ppu *a = (const Ppu *)rec->regs[line].b;
@@ -456,8 +464,9 @@ static void build_groups(const FrameRecord *rec)
             end++;
         }
         if (!(a->inidisp & 0x80) && end - line + 1 >= 16 && (a->bgmode & 7) == 1) {
-            int view = view_for_scroll(a->hScroll[0], a->vScroll[0]);
+            int view = view_for_scroll(a->hScroll[0], a->vScroll[0], used);
             if (view >= 0) {
+                used |= 1u << view;
                 ViewGroup *g = &s_groups[s_ngroups++];
                 g->y0 = (int)line;
                 g->y1 = (int)end + 1;
@@ -479,7 +488,7 @@ static void cache_learn(const FrameRecord *rec)
     tag_vram_changes();
     build_groups(rec);
     for (int gi = 0; gi < s_ngroups; gi++) {
-        const ViewGroup *g = &s_groups[gi];
+        ViewGroup *g = &s_groups[gi];
         for (int l = 0; l < CACHE_LAYERS; l++) {
             TileStore *st = &s_store[g->view][l];
             if (!store_alloc(st)) return;
@@ -580,16 +589,20 @@ static void cache_serve(int extra)
             uint32_t tx0 = (uint32_t)(cx >> 3);
             uint32_t v = (uint32_t)(((int)(cam_y & 0x3ff) + g->off_y[l]) & 0x3ff);
             int32_t top = cy + g->y0;
+            int rows = (g->sc[l] & 2) ? 64 : 32;
+            int map_dy = (g->off_y[l] >> 3) & (rows - 1);
+            if (map_dy >= rows / 2) map_dy -= rows;
             uint32_t ty0 = (uint32_t)(top >> 3), ty1 = (uint32_t)((top + g->y1 - 1 - g->y0) >> 3);
             uint32_t map_row0 = (v + (uint32_t)g->y0) >> 3;
-            for (uint32_t r = 0; r <= ty1 - ty0; r++) {
+            for (uint32_t r = (uint32_t)-1; r != ty1 - ty0 + 2; r++) {
                 uint32_t row = map_row0 + r;
                 for (int c = -margin_cols; c <= 32 + margin_cols; c++) {
                     if (c >= 0 && c <= 32) continue;
                     uint32_t tx = (uint32_t)((int)tx0 + c);
                     uint16_t e;
                     uint16_t adr = tilemap_word(g->sc[l], tx, row);
-                    if (map_tile(l, tx, ty0 + r, &e) || store_get(st, tx, ty0 + r, &e)) {
+                    if (map_tile(l, tx, (uint32_t)((int)(ty0 + r) + map_dy), &e) ||
+                        store_get(st, tx, ty0 + r, &e)) {
                         vram[adr] = e;
                         s_stat_served++;
                         continue;
@@ -669,6 +682,7 @@ static void hud_bands_for_view(Ppu *ppu, int extra, int slot, int y0, int y1)
     };
     PpuWsElasticSeg identity[1] = {{0, 256, 0, 256}};
     int a1 = y0 + HUD_SPLIT_ROWS < y1 ? y0 + HUD_SPLIT_ROWS : y1;
+    a1 -= (a1 + ppu->vScroll[2]) & 7;
     int b1 = y0 + HUD_MINIMAP_ROWS < y1 ? y0 + HUD_MINIMAP_ROWS : y1;
     if (a1 > y0) PpuSetWidescreenLayerElasticBandSlot(ppu, (uint8_t)slot, 2, (uint8_t)y0, (uint8_t)a1, split, 3);
     if (b1 > a1) PpuSetWidescreenLayerElasticBandSlot(ppu, (uint8_t)(slot + 1), 2, (uint8_t)a1, (uint8_t)b1, left_only, 2);
@@ -694,7 +708,10 @@ void RnrrBeginSimFrame(unsigned number)
     (void)number;
     apply_cull_window(s_extra);
     int race = RnrrInRace();
-    if (race != s_race_frame) cache_reset();
+    if (race != s_race_frame) {
+        cache_reset();
+        memset(s_bar_hist, 0, sizeof(s_bar_hist));
+    }
     s_race_frame = race;
     overclock_apply(race ? s_overclock : 100);
     read_cameras();
@@ -712,11 +729,49 @@ void RnrrRasterObserve(const struct Ppu *ppu, unsigned line, void *context)
 {
     (void)context;
     if (line < 1 || line > 224) return;
-    memcpy(s_rec[s_cur].regs[line].b, ppu, PPU_SAVESTATE_REGS_SIZE);
+    FrameRecord *rec = &s_rec[s_cur];
+    memcpy(rec->regs[line].b, ppu, PPU_SAVESTATE_REGS_SIZE);
+    if (line == 1) {
+        s_rec_observed = 1;
+        memcpy(rec->oam, ppu->oam, sizeof(rec->oam));
+        memcpy(rec->high_oam, ppu->highOam, sizeof(rec->high_oam));
+        rec->oam_split = 0;
+    } else if (line == ppu_rasterOamSwitchLine()) {
+        memcpy(rec->oam2, ppu->oam, sizeof(rec->oam2));
+        memcpy(rec->high_oam2, ppu->highOam, sizeof(rec->high_oam2));
+        rec->oam_split = line;
+    }
+}
+
+static unsigned bar_start(const FrameRecord *rec)
+{
+    for (unsigned l = 17; l <= 224; l++) {
+        const Ppu *a = (const Ppu *)rec->regs[l - 1].b, *b = (const Ppu *)rec->regs[l].b;
+        if ((b->inidisp & 0x80) && !(a->inidisp & 0x80)) return l;
+    }
+    return 0;
+}
+
+static unsigned bar_reference(void)
+{
+    unsigned ref = 0;
+    for (unsigned i = 0; i < 16; i++)
+        if (s_bar_hist[i] && (!ref || s_bar_hist[i] < ref)) ref = s_bar_hist[i];
+    return ref;
+}
+
+static void hold_bar_start(uint8_t *dst, size_t pitch, int frame_w, unsigned start)
+{
+    unsigned ref = bar_reference();
+    if (!ref || start <= ref || start - ref > 2) return;
+    for (unsigned l = ref; l < start; l++)
+        memset(dst + (size_t)(l - 1) * pitch, 0, (size_t)frame_w * 4);
 }
 
 void RnrrEndSimFrame(const uint8_t *field, unsigned number)
 {
+    s_rec[s_cur].bar_start = s_race_frame ? bar_start(&s_rec[s_cur]) : 0;
+    s_bar_hist[s_bar_hist_pos++ & 15] = s_rec[s_cur].bar_start;
     if (s_race_frame && s_extra) cache_learn(&s_rec[s_cur]);
     {
         static const char *wdir; static int wstep, wchecked;
@@ -795,6 +850,7 @@ void RnrrEndSimFrame(const uint8_t *field, unsigned number)
                     (unsigned long long)s_stat_learned, (unsigned long long)s_stat_served, (unsigned long long)s_stat_blanked, split_frames, split_missed);
     }
     if (!s_fps_enabled) {
+        s_rec_observed = 0;
         s_rec[0].valid = s_rec[1].valid = 0;
         key_reset();
         s_snap_valid = 0;
@@ -804,8 +860,12 @@ void RnrrEndSimFrame(const uint8_t *field, unsigned number)
     if (!s_scratch) s_scratch = calloc(1, sizeof(Ppu));
     if (!s_snap || !s_scratch) return;
     FrameRecord *rec = &s_rec[s_cur];
-    memcpy(rec->oam, g_ppu->oam, sizeof(rec->oam));
-    memcpy(rec->high_oam, g_ppu->highOam, sizeof(rec->high_oam));
+    if (!s_rec_observed) {
+        memcpy(rec->oam, g_ppu->oam, sizeof(rec->oam));
+        memcpy(rec->high_oam, g_ppu->highOam, sizeof(rec->high_oam));
+        rec->oam_split = 0;
+    }
+    s_rec_observed = 0;
     rec->number = number;
     rec->extra = s_extra;
     rec->valid = 1;
@@ -815,7 +875,10 @@ void RnrrEndSimFrame(const uint8_t *field, unsigned number)
         unsigned changed_lines = key->valid ? regs_lines_changed(rec, key, KEY_MINOR_LINES + 1, NULL) : 0;
         int regs_changed = !key->valid || changed_lines > KEY_MINOR_LINES;
         int oam_changed = !key->valid || memcmp(rec->oam, key->oam, sizeof(rec->oam)) != 0 ||
-                          memcmp(rec->high_oam, key->high_oam, sizeof(rec->high_oam)) != 0;
+                          memcmp(rec->high_oam, key->high_oam, sizeof(rec->high_oam)) != 0 ||
+                          rec->oam_split != key->oam_split ||
+                          (rec->oam_split && (memcmp(rec->oam2, key->oam2, sizeof(rec->oam2)) != 0 ||
+                                              memcmp(rec->high_oam2, key->high_oam2, sizeof(rec->high_oam2)) != 0));
         if (regs_changed || ((oam_changed || changed_lines) && number - s_key_field >= s_key_period)) {
             s_perf.upd++;
             if (key->valid && getenv("RNRR_LERP_LOG")) {
@@ -858,9 +921,14 @@ static int same_scene(const FrameRecord *prev, const FrameRecord *cur)
     if (!prev->valid || !cur->valid) return 0;
     if (cur->number < prev->number + 1 || cur->number > prev->number + 4) return 0;
     if (prev->extra != cur->extra) return 0;
+    unsigned blank = 0;
     for (unsigned line = 1; line <= 224; line++) {
         const Ppu *a = (const Ppu *)prev->regs[line].b;
         const Ppu *b = (const Ppu *)cur->regs[line].b;
+        if ((a->inidisp & 0x80) || (b->inidisp & 0x80)) {
+            if (++blank > 8) return 0;
+            continue;
+        }
         if (a->bgmode != b->bgmode || a->inidisp != b->inidisp ||
             a->screenEnabled[0] != b->screenEnabled[0] ||
             memcmp(a->bgXsc, b->bgXsc, sizeof(a->bgXsc)) != 0)
@@ -869,16 +937,19 @@ static int same_scene(const FrameRecord *prev, const FrameRecord *cur)
     return 1;
 }
 
-static void lerp_oam(Ppu *dst, const FrameRecord *prev, const FrameRecord *cur, double alpha)
+static void lerp_oam(Ppu *dst, const uint16_t *prev_oam, const uint8_t *prev_high,
+                     const uint16_t *cur_oam, const uint8_t *cur_high, int extra, double alpha)
 {
+    memcpy(dst->oam, cur_oam, sizeof(dst->oam));
+    memcpy(dst->highOam, cur_high, sizeof(dst->highOam));
     int px[128], py[128], cx[128], cy[128];
     uint8_t psz[128], csz[128], used[128] = {0};
     for (int n = 0; n < 128; n++) {
-        uint16_t pa = prev->oam[n * 2], ca = cur->oam[n * 2];
-        uint8_t ph = (prev->high_oam[n >> 2] >> ((n & 3) * 2)) & 3;
-        uint8_t ch = (cur->high_oam[n >> 2] >> ((n & 3) * 2)) & 3;
-        px[n] = (pa & 0xff) | ((ph & 1) << 8); if (px[n] >= 256) px[n] -= 512;
-        cx[n] = (ca & 0xff) | ((ch & 1) << 8); if (cx[n] >= 256) cx[n] -= 512;
+        uint16_t pa = prev_oam[n * 2], ca = cur_oam[n * 2];
+        uint8_t ph = (prev_high[n >> 2] >> ((n & 3) * 2)) & 3;
+        uint8_t ch = (cur_high[n >> 2] >> ((n & 3) * 2)) & 3;
+        px[n] = (pa & 0xff) | ((ph & 1) << 8); if (px[n] >= 256 + extra) px[n] -= 512;
+        cx[n] = (ca & 0xff) | ((ch & 1) << 8); if (cx[n] >= 256 + extra) cx[n] -= 512;
         py[n] = pa >> 8; cy[n] = ca >> 8;
         psz[n] = ph >> 1; csz[n] = ch >> 1;
     }
@@ -886,7 +957,7 @@ static void lerp_oam(Ppu *dst, const FrameRecord *prev, const FrameRecord *cur, 
     for (int n = 0; n < 128; n++) {
         match[n] = -1;
         if (cy[n] >= 224 || py[n] >= 224) continue;
-        if (prev->oam[n * 2 + 1] != cur->oam[n * 2 + 1] || psz[n] != csz[n]) continue;
+        if (prev_oam[n * 2 + 1] != cur_oam[n * 2 + 1] || psz[n] != csz[n]) continue;
         int dx = cx[n] - px[n], dy = cy[n] - py[n];
         if (dx > INTERP_MAX_OBJ || dx < -INTERP_MAX_OBJ || dy > INTERP_MAX_OBJ || dy < -INTERP_MAX_OBJ) continue;
         match[n] = n;
@@ -894,10 +965,10 @@ static void lerp_oam(Ppu *dst, const FrameRecord *prev, const FrameRecord *cur, 
     }
     for (int n = 0; n < 128; n++) {
         if (match[n] >= 0 || cy[n] >= 224) continue;
-        uint16_t cb = cur->oam[n * 2 + 1];
+        uint16_t cb = cur_oam[n * 2 + 1];
         int found = -1, count = 0;
         for (int m = 0; m < 128; m++) {
-            if (used[m] || prev->oam[m * 2 + 1] != cb || psz[m] != csz[n] || py[m] >= 224) continue;
+            if (used[m] || prev_oam[m * 2 + 1] != cb || psz[m] != csz[n] || py[m] >= 224) continue;
             int dx = cx[n] - px[m], dy = cy[n] - py[m];
             if (dx > INTERP_MAX_OBJ || dx < -INTERP_MAX_OBJ || dy > INTERP_MAX_OBJ || dy < -INTERP_MAX_OBJ) continue;
             found = m;
@@ -997,6 +1068,7 @@ int RnrrDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
         !same_scene(prev, cur) || frame_w != 256 + 2 * cur->extra || frame_h != 224) {
         capture_frame(field, (size_t)frame_w * 4, frame_w, frame_h);
         copy_field(dst, pitch, field, frame_w, frame_h);
+        hold_bar_start(dst, pitch, frame_w, s_bar_hist[(s_bar_hist_pos - 1) & 15]);
         perf_overlay(dst, pitch, frame_w, frame_h, 0);
         return 1;
     }
@@ -1008,13 +1080,16 @@ int RnrrDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
     s_scratch->widescreenLineEnhancerContext = NULL;
     memset(&s_scratch->mode7Hd, 0, sizeof(s_scratch->mode7Hd));
     PpuBeginDrawing(s_scratch, dst, pitch, s_snap->renderFlags);
-    lerp_oam(s_scratch, prev, cur, alpha);
+    const FrameRecord *po = !prev->oam_split == !cur->oam_split ? prev : cur;
+    lerp_oam(s_scratch, po->oam, po->high_oam, cur->oam, cur->high_oam, cur->extra, alpha);
 
     for (unsigned line = 1; line <= 224; line++) {
+        if (line == cur->oam_split)
+            lerp_oam(s_scratch, po->oam2, po->high_oam2, cur->oam2, cur->high_oam2, cur->extra, alpha);
         RegBlock regs = cur->regs[line];
         Ppu *r = (Ppu *)regs.b;
         const Ppu *p = (const Ppu *)prev->regs[line].b;
-        for (int bg = 0; bg < 4; bg++) {
+        for (int bg = 0; bg < 4 && !(p->inidisp & 0x80); bg++) {
             uint16_t h, v;
             if (scroll_lerp(p->hScroll[bg], r->hScroll[bg], alpha, &h) &&
                 scroll_lerp(p->vScroll[bg], r->vScroll[bg], alpha, &v)) {
@@ -1025,6 +1100,7 @@ int RnrrDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
         memcpy(s_scratch, regs.b, PPU_SAVESTATE_REGS_SIZE);
         ppu_runLine(s_scratch, (int)line);
     }
+    hold_bar_start(dst, pitch, frame_w, cur->bar_start);
     capture_frame(dst, pitch, frame_w, frame_h);
     perf_overlay(dst, pitch, frame_w, frame_h, 1);
     return 1;

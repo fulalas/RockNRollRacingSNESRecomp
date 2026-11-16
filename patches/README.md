@@ -36,6 +36,18 @@ snesrecomp.patch
 - snes/dsp.c: a voice fading out (key-off release) keeps its pitch and sample
   until it is silent or keyed on again; the RNRR driver loads the next sound's
   pitch during the release and the explosion tail turned into a noise burst.
+- desktop/host_main.c, host_clock.c/.h, tests/host/host_clock_test.c: with
+  interpolation on and VSync enabled, presentation is locked to the display's
+  vblank (swap interval 1, or N when the chosen rate divides the refresh) and
+  alpha is computed for the next vblank, instead of a software timer with
+  VSync forced off.
+- snes/ppu.c: the raster journal keeps the OAM from before the first OAM
+  write made during the visible field and uses it for the lines above that
+  write, or above the forced-blank band just before it (OAM writes only land
+  in forced blank; the recompiled timing can key them a few lines late). RNRR
+  2-player split loads the bottom view's sprites mid-frame; the top view
+  showed none. ppu_rasterOamSwitchLine() reports the line where the OAM
+  switched in the last render.
 
 recomp-ui.patch
 - `digest_whole_file` on the launcher game info: hash the picked ROM whole.
