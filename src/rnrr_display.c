@@ -519,6 +519,11 @@ enum {
     MAP_ROWS = 114,
     MAP_INDEX_TABLE = 0x15DC0,
     MAP_METATILE_TABLE = 0x189C0,
+    OAM_VIEW_SEL = 0x13F6,
+    OAM_VIEW_BUF0 = 0x183A,
+    OAM_VIEW_BUF1 = 0x194A,
+    OAM_VIEW_LOW = 0x100,
+    OAM_VIEW_HIGH = 0x10,
 };
 
 static inline uint16_t ram16(uint32_t a)
@@ -737,6 +742,11 @@ void RnrrRasterObserve(const struct Ppu *ppu, unsigned line, void *context)
         memcpy(rec->high_oam, ppu->highOam, sizeof(rec->high_oam));
         rec->oam_split = 0;
     } else if (line == ppu_rasterOamSwitchLine()) {
+        if (s_race_frame && s_bar_hist[(s_bar_hist_pos - 1) & 15]) {
+            const uint8_t *buf = g_ram + (ram16(OAM_VIEW_SEL) == 2 ? OAM_VIEW_BUF1 : OAM_VIEW_BUF0);
+            memcpy(g_ppu->oam, buf, OAM_VIEW_LOW);
+            memcpy(g_ppu->highOam, buf + OAM_VIEW_LOW, OAM_VIEW_HIGH);
+        }
         memcpy(rec->oam2, ppu->oam, sizeof(rec->oam2));
         memcpy(rec->high_oam2, ppu->highOam, sizeof(rec->high_oam2));
         rec->oam_split = line;
