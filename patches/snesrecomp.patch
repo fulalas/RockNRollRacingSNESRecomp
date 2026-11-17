@@ -263,7 +263,7 @@ index d5283d6..8275f30 100644
  /* Which presentation rate to run at: an explicit fps if it is one the clock
   * supports, else the display's refresh, clamped to a sane range. 0 = display. */
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
-index 3bc3905..96b962a 100644
+index 3bc3905..4edbd4a 100644
 --- a/runner/src/desktop/host_main.c
 +++ b/runner/src/desktop/host_main.c
 @@ -63,6 +63,7 @@
@@ -274,28 +274,33 @@ index 3bc3905..96b962a 100644
  #include "launcher_cache.h"
  #include "host_paths.h"
  #include "host_args.h"
-@@ -265,6 +266,7 @@ static uint16 g_seat_pad[kSnesHostPadSeats];
+@@ -265,6 +266,8 @@ static uint16 g_seat_pad[kSnesHostPadSeats];
  static int g_ppu_render_flags = 0;
  static int g_snes_width = 256, g_snes_height = 224;
  static double g_present_alpha = 1;
 +static double g_last_swap_seconds;
++static unsigned g_swap_samples, g_swap_blocked;
  static bool g_reset_clock;
  static double g_simulation_hz = SNES_HOST_NTSC_HZ;
  
-@@ -360,6 +362,12 @@ static void WaitUntil(double deadline) {
+@@ -360,6 +363,16 @@ static void WaitUntil(double deadline) {
    }
    ProfileEnd(kProfileWait, profile_start);
  }
 +static double VSyncShownAt(const SnesHostClock *c) {
 +  double now = MonotonicSeconds();
-+  if (g_last_swap_seconds >= c->vsync_period * 0.25) return now;
++  ++g_swap_samples;
++  if (g_last_swap_seconds >= c->vsync_period * 0.25) {
++    ++g_swap_blocked;
++    return now;
++  }
 +  return now > c->next_presentation ? now : c->next_presentation;
 +}
 +
  static double DisplayRefresh(void) {
    if (!g_window) return 60;
  #if SNESRECOMP_SDL3
-@@ -380,13 +388,37 @@ static double WantedPresentationHz(double refresh) {
+@@ -380,13 +393,37 @@ static double WantedPresentationHz(double refresh) {
  }
  static bool PresentationDecoupled(void) { return WantedPresentationHz(0) > 0; }
  
@@ -337,7 +342,7 @@ index 3bc3905..96b962a 100644
    switch (g_config.vsync) {
      case kSnesVSync_Off:      return 0;
      case kSnesVSync_Adaptive: return -1;
-@@ -410,6 +442,13 @@ static int g_sdl_audio_mixer_volume = SNESRECOMP_SDL_MIX_MAXVOLUME;
+@@ -410,6 +447,13 @@ static int g_sdl_audio_mixer_volume = SNESRECOMP_SDL_MIX_MAXVOLUME;
  
  static struct RendererFuncs g_renderer_funcs;
  
@@ -351,7 +356,7 @@ index 3bc3905..96b962a 100644
  /* Set by the hotkeys; consumed once in the frame loop. */
  static int g_savestate_menu_hotkey;
  static int g_rewind_hotkey;
-@@ -1482,7 +1521,9 @@ static void DrawPpuFrameWithPerf(void) {
+@@ -1482,7 +1526,9 @@ static void DrawPpuFrameWithPerf(void) {
  
    ProfileEnd(kProfileCompose, profile_start);
    profile_start = ProfileStart();
@@ -361,7 +366,7 @@ index 3bc3905..96b962a 100644
    ProfileEnd(kProfilePresent, profile_start);
    RecordFrameTiming(g_present_frame);
  }
-@@ -2707,6 +2748,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
+@@ -2707,6 +2753,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
    gi->known_sha256 = g_rom_identity_ok
        ? (const uint8_t (*)[32])&g_rom_sha256 : NULL;
    gi->num_known_sha256 = g_rom_identity_ok ? 1 : 0;
@@ -369,7 +374,7 @@ index 3bc3905..96b962a 100644
    /* Additive: a title catalogued by SHA-1 sets these instead of, or as
     * well as, the SHA-256 above. */
    gi->known_sha1_hex = game->known_sha1_hex;
-@@ -2856,10 +2898,7 @@ static void ApplyLiveSettings(const Config *before) {
+@@ -2856,10 +2903,7 @@ static void ApplyLiveSettings(const Config *before) {
        g_current_window_scale = IntMin(g_config.window_scale, kMaxWindowScale);
      ChangeWindowScale(0);
    }
@@ -381,7 +386,7 @@ index 3bc3905..96b962a 100644
    if (g_config.frame_blend != before->frame_blend)
      FrameBlendConfigure();
    if (g_config.run_ahead != before->run_ahead)
-@@ -3213,6 +3252,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3213,6 +3257,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
        g_config.output_method, g_config.new_renderer, g_config.window_scale,
        g_config.fullscreen, g_config.enable_audio, g_config.audio_freq,
        g_config.audio_samples);
@@ -389,7 +394,7 @@ index 3bc3905..96b962a 100644
    PadGestureConfigure(&g_rewind_gesture, g_config.rewind_gesture, "Select+R3",
                        "rewind", "RewindGesture");
    if (game->in_game_launcher)
-@@ -3247,6 +3287,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
+@@ -3247,6 +3292,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
    static char rom_path_buf[1024];
    {
      g_rom_identity_ok = DecodeRomIdentity(g_rom_sha256, &g_rom_crc32);
@@ -397,7 +402,7 @@ index 3bc3905..96b962a 100644
      int rom_resolved_by_launcher = 0;
      char beside_exe[1024] = "";
      /* The ROM comes from the shared parser now: positional or --rom,
-@@ -3775,6 +3816,8 @@ error_reading:;
+@@ -3775,6 +3821,8 @@ error_reading:;
    if (presentation_hz <= 0) presentation_hz = g_simulation_hz;
    snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
    double next_display_check = 0;
@@ -406,7 +411,7 @@ index 3bc3905..96b962a 100644
  
    /* Rewind ring: reads the env overrides and reserves slot headers; the
     * buffer itself is allocated lazily on the first capture. */
-@@ -3913,7 +3956,8 @@ error_reading:;
+@@ -3913,7 +3961,8 @@ error_reading:;
            snes_savestate_menu_poll_nav(human, SDL_GetTicks());
          } else if (!snes_netplay_menu_paused()) {
            (void)snes_savestate_menu_poll_open(g_savestate_menu_hotkey
@@ -416,7 +421,7 @@ index 3bc3905..96b962a 100644
          }
          g_savestate_menu_hotkey = 0;
          if (snes_netplay_menu_ready() && !snes_savestate_menu_is_open())
-@@ -3930,6 +3974,8 @@ error_reading:;
+@@ -3930,6 +3979,8 @@ error_reading:;
          SetAudioPaused(false);
          OverlayNoteClosed();
        }
@@ -425,7 +430,7 @@ index 3bc3905..96b962a 100644
        if (!snes_host_clock_simulation_due(&video_clock, MonotonicSeconds())) {
          snes_netplay_pump();
          WaitUntil(video_clock.next_simulation);
-@@ -4009,18 +4055,28 @@ error_reading:;
+@@ -4009,18 +4060,30 @@ error_reading:;
      bool paced_custom = PresentationDecoupled() && paced_realtime;
      double video_now = MonotonicSeconds();
      if (video_now >= next_display_check) {
@@ -442,6 +447,8 @@ index 3bc3905..96b962a 100644
 +        vsync_period = period;
 +        frame_lock = FrameLockPresents(period);
 +        ReconfigurePresenter();
++        host_report_breadcrumb("display: refresh=%.3f present_hz=%.3f vsync_interval=%d frame_lock=%d",
++                               refresh, hz, VSyncInterval(), frame_lock);
 +      }
        next_display_check = video_now + 0.25;
      }
@@ -455,7 +462,7 @@ index 3bc3905..96b962a 100644
      if (paced_realtime && !snes_host_clock_simulation_due(&video_clock, MonotonicSeconds())) {
        if (snes_host_clock_presentation_due(&video_clock, MonotonicSeconds())) {
          if (paced_custom) {
-@@ -4031,7 +4087,8 @@ error_reading:;
+@@ -4031,7 +4094,8 @@ error_reading:;
            ++presentations;
            /* Count deadlines at dispatch, not after the render/upload cost:
             * crossing the next deadline while drawing does not consume it. */
@@ -465,7 +472,7 @@ index 3bc3905..96b962a 100644
          }
        }
        WaitUntil(paced_custom ? snes_host_clock_next_deadline(&video_clock)
-@@ -4170,7 +4227,7 @@ error_reading:;
+@@ -4170,7 +4234,7 @@ error_reading:;
      g_rewind_hotkey = 0;
      /* Exactly ONE poll_open per frame: it latches the previous word to edge
       * detect on, so a second call in the same frame eats the edge. */
@@ -474,7 +481,21 @@ index 3bc3905..96b962a 100644
      if (g_savestate_menu_hotkey) {
        g_savestate_menu_hotkey = 0;
        if (!snes_savestate_menu_is_open())
-@@ -4269,14 +4326,17 @@ error_reading:;
+@@ -4241,7 +4305,12 @@ error_reading:;
+     if (frameCtr == 1)
+       host_report_breadcrumb("first frame simulated");
+     else if (frameCtr % 3600 == 0)   /* ~once a minute at 60 fps */
+-      host_report_breadcrumb("heartbeat: frame=%u", frameCtr);
++    {
++      host_report_breadcrumb("heartbeat: frame=%u presents=%llu paced_vsync=%d frame_lock=%d swaps_blocked=%u/%u",
++                             frameCtr, (unsigned long long)presentations, paced_vsync,
++                             video_clock.lock_presents, g_swap_blocked, g_swap_samples);
++      g_swap_blocked = g_swap_samples = 0;
++    }
+     g_snes->disableRender = g_turbo && (frameCtr & 0xf) != 0;
+     snes_osd_set_turbo(g_turbo);
+ 
+@@ -4269,14 +4338,17 @@ error_reading:;
      else
        snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
      if (!g_snes->disableRender &&
