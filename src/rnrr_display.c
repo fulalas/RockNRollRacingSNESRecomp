@@ -1064,7 +1064,8 @@ int RnrrDrawFrame(uint8_t *dst, size_t pitch, const uint8_t *field,
             fprintf(stderr, "[rnrr-lerp] field=%u key=%u k=%u period=%u alpha=%.3f scene=%d\n",
                     last_field, s_key_field, k, s_key_period, alpha, same_scene(prev, cur));
     }
-    if (!s_fps_enabled || !s_snap_valid || alpha >= 1.0 || alpha <= 0.0 ||
+    if (!s_fps_enabled || !s_snap_valid || alpha <= 0.0 ||
+        (alpha >= 1.0 && (k == 0 || k >= s_key_period)) ||
         !same_scene(prev, cur) || frame_w != 256 + 2 * cur->extra || frame_h != 224) {
         capture_frame(field, (size_t)frame_w * 4, frame_w, frame_h);
         copy_field(dst, pitch, field, frame_w, frame_h);

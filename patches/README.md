@@ -40,7 +40,11 @@ snesrecomp.patch
   interpolation on and VSync enabled, presentation is locked to the display's
   vblank (swap interval 1, or N when the chosen rate divides the refresh) and
   alpha is computed for the next vblank, instead of a software timer with
-  VSync forced off.
+  VSync forced off. When the presentation rate is within 0.4% of 1 to 8 times
+  the game rate (59.94/60, 120, 240 Hz...), the game runs exactly one frame
+  every N refreshes instead of drifting against them, and the audio servo
+  absorbs the up-to-0.4% speed change; if refreshes stall for more than a
+  frame, the game runs on wall time until they resume.
 - snes/ppu.c: the raster journal keeps the OAM from before the first OAM
   write made during the visible field and uses it for the lines above that
   write, or above the forced-blank band just before it (OAM writes only land
