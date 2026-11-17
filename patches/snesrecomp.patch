@@ -263,7 +263,7 @@ index d5283d6..8275f30 100644
  /* Which presentation rate to run at: an explicit fps if it is one the clock
   * supports, else the display's refresh, clamped to a sane range. 0 = display. */
 diff --git a/runner/src/desktop/host_main.c b/runner/src/desktop/host_main.c
-index 3bc3905..4edbd4a 100644
+index 3bc3905..d964e9f 100644
 --- a/runner/src/desktop/host_main.c
 +++ b/runner/src/desktop/host_main.c
 @@ -63,6 +63,7 @@
@@ -283,6 +283,26 @@ index 3bc3905..4edbd4a 100644
  static bool g_reset_clock;
  static double g_simulation_hz = SNES_HOST_NTSC_HZ;
  
+@@ -312,7 +315,7 @@ static unsigned g_profile_frame;
+ static struct { double total, maximum; unsigned count, maximum_frame; } g_timings[kProfileCount];
+ /* Opt-in presentation trace, retained in memory and written only after play.
+  * Per-frame file flushing would itself introduce the stalls this measures. */
+-enum { kFrameTimingCapacity = 36000 };
++enum { kFrameTimingCapacity = 216000 };
+ typedef struct FrameTiming {
+   unsigned frame;
+   double at, periods, stages[kProfileCount];
+@@ -322,8 +325,8 @@ static unsigned g_frame_timing_count;
+ static double g_frame_timing_previous[kProfileCount];
+ 
+ static void RecordFrameTiming(unsigned frame) {
+-  if (!g_profile || !g_frame_timings || g_frame_timing_count == kFrameTimingCapacity) return;
+-  FrameTiming *t = &g_frame_timings[g_frame_timing_count++];
++  if (!g_profile || !g_frame_timings) return;
++  FrameTiming *t = &g_frame_timings[g_frame_timing_count++ % kFrameTimingCapacity];
+   t->frame = frame;
+   t->at = MonotonicSeconds();
+   t->periods = RtlLastFramePeriods();
 @@ -360,6 +363,16 @@ static void WaitUntil(double deadline) {
    }
    ProfileEnd(kProfileWait, profile_start);
@@ -515,6 +535,20 @@ index 3bc3905..4edbd4a 100644
      }
      if (run_frames && frameCtr >= run_frames) {
        running = false;
+@@ -4291,8 +4363,11 @@ error_reading:;
+     FILE *f = fopen(frame_timing_path, "w");
+     if (f) {
+       fprintf(f, "frame,present_seconds,guest_periods,guest_ms,raster_ms,acquire_ms,compose_ms,present_ms,trace_ms,hook_ms,events_ms,wait_ms\n");
+-      for (unsigned n = 0; n < g_frame_timing_count; ++n) {
+-        const FrameTiming *t = &g_frame_timings[n];
++      unsigned kept = g_frame_timing_count < kFrameTimingCapacity ? g_frame_timing_count
++                                                                  : kFrameTimingCapacity;
++      unsigned first = g_frame_timing_count - kept;
++      for (unsigned n = 0; n < kept; ++n) {
++        const FrameTiming *t = &g_frame_timings[(first + n) % kFrameTimingCapacity];
+         fprintf(f, "%u,%.9f,%.6f", t->frame, t->at - profile_window_start, t->periods);
+         for (unsigned i = 0; i < kProfileCount; ++i) fprintf(f, ",%.6f", t->stages[i] * 1000);
+         fputc('\n', f);
 diff --git a/runner/src/desktop/host_main.h b/runner/src/desktop/host_main.h
 index 03b6f06..b27b1c4 100644
 --- a/runner/src/desktop/host_main.h
